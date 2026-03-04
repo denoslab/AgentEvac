@@ -42,6 +42,24 @@ python Traci_GPT2.py --run-mode replay --run-id 20260209_012156
 
 **Key flags:** `--messaging on/off`, `--events on/off`, `--web-dashboard on/off`, `--overlays on/off`, `--metrics on/off`
 
+## Docker
+
+```bash
+# Build the image
+docker compose build
+
+# Place scenario files in ./scenario/ (Repaired.sumocfg, *.net.xml, *.rou.xml)
+mkdir -p scenario outputs
+
+# Run (OPENAI_API_KEY is read from your shell environment)
+docker compose run simulation --scenario advice_guided --metrics on
+
+# Override scenario or flags
+docker compose run simulation --scenario no_notice --messaging off --metrics on
+```
+
+Run artifacts are written to `./outputs/` on the host.
+
 ## Parameter Sweep & Calibration
 
 ```bash
