@@ -1,6 +1,8 @@
-# AgentEvac
+# Agentic Simulator for Wildfire Evacuations
 
-An agent-based simulator for wildfire evacuations that couples SUMO traffic simulation with LLM-driven agents. Agents follow the Protective Action Decision Model (PADM), maintaining probabilistic beliefs about hazard states and making real-time departure, routing, and destination decisions under uncertainty.
+![banner](static/agent-evac-logo.png)
+
+An agentic simulator for wildfire evacuations that couples SUMO traffic simulation with LLM-driven agents. Agents follow the Protective Action Decision Model (PADM), maintaining probabilistic beliefs about hazard states and making real-time departure, routing, and destination decisions under uncertainty.
 
 ## Background
 
