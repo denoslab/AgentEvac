@@ -1,3 +1,45 @@
+"""Main simulation loop for the AgentEvac wildfire evacuation simulator.
+
+This script is the entry point for all simulation runs.  It manages the SUMO
+lifecycle, orchestrates the per-agent decision pipeline, handles LLM calls, logs
+events and metrics, and optionally serves a live web dashboard.
+
+**Quick-start:**
+    python Traci_GPT2.py --sumo-binary sumo-gui --scenario advice_guided
+    python Traci_GPT2.py --sumo-binary sumo --scenario no_notice --metrics on
+
+**Key CLI flags:**
+    --scenario         : Information regime: no_notice | alert_guided | advice_guided.
+    --run-mode         : record (default) | replay.
+    --run-id           : Timestamp token from a previous run (replay helper).
+    --sumo-binary      : 'sumo' (headless) or 'sumo-gui' (interactive).
+    --messaging        : on | off — inter-agent natural-language messaging.
+    --events           : on | off — real-time JSONL event stream.
+    --web-dashboard    : on | off — live HTTP event dashboard.
+    --metrics          : on | off — post-run KPI JSON export.
+    --overlays         : on | off — SUMO GUI POI agent-status labels.
+
+**Key environment variables (override defaults without CLI):**
+    OPENAI_MODEL       : LLM model ID (default: gpt-4o-mini).
+    DECISION_PERIOD_S  : Seconds between LLM decision rounds (default: 5.0).
+    RUN_MODE           : record | replay.
+    REPLAY_LOG_PATH    : Path to the JSONL replay log.
+    EVENTS_LOG_PATH    : Base path for the event stream JSONL.
+    METRICS_LOG_PATH   : Base path for the metrics JSON.
+    INFO_SIGMA         : Gaussian noise std-dev on margin observations (metres).
+    INFO_DELAY_S       : Information delay in seconds.
+    DEFAULT_THETA_TRUST: Default social-signal trust weight.
+
+**Agent decision pipeline** (runs every DECISION_PERIOD_S seconds per vehicle):
+    1. information_model  — sample noisy/delayed environment and social signals.
+    2. belief_model       — Bayesian update: env + social → belief triplet + entropy.
+    3. departure_model    — check departure clauses for pre-spawn agents.
+    4. routing_utility    — score each menu option by exposure and travel cost.
+    5. scenarios          — filter prompt fields to match the information regime.
+    6. OpenAI API call    — GPT-4o-mini with Pydantic-validated structured output.
+    7. metrics            — record departure time, exposure, decision instability.
+"""
+
 # Step 1: Add modules to provide access to specific libraries and functions
 import os
 import sys
@@ -91,6 +133,18 @@ DESTINATION_LIBRARY = [
 # REPLAY CONFIG
 # =========================
 def _resolve_run_path_with_id(base_path: str, run_id: str) -> str:
+    """Resolve a replay log path by inserting a specific run-ID timestamp token.
+
+    Used when ``--run-id`` is specified on the CLI to point directly at a previous
+    recording without needing to supply the full file path.
+
+    Args:
+        base_path: Base log path template (e.g., ``"outputs/replay/routes.jsonl"``).
+        run_id: Timestamp token from a previous run (e.g., ``"20260209_012156"``).
+
+    Returns:
+        Full path string with the run ID inserted before the extension.
+    """
     base = Path(base_path)
     ext = base.suffix or ".jsonl"
     stem = base.stem if base.suffix else base.name
@@ -98,6 +152,14 @@ def _resolve_run_path_with_id(base_path: str, run_id: str) -> str:
 
 
 def _parse_cli_args() -> argparse.Namespace:
+    """Parse command-line arguments, merging with environment-variable defaults.
+
+    CLI flags take precedence over environment variables.  See the module docstring
+    for the full list of supported flags and their corresponding env vars.
+
+    Returns:
+        Parsed ``argparse.Namespace`` object.
+    """
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--run-mode", choices=["record", "replay"], help="Override RUN_MODE env var.")
     parser.add_argument("--replay-log-path", help="Override REPLAY_LOG_PATH env var.")
@@ -330,7 +392,13 @@ if RUN_MODE == "replay" and not os.path.exists(REPLAY_LOG_PATH):
     )
 
 
-# Wildfire: circles with start time, center, initial radius, growth rate; new fires appear over time
+# =========================
+# FIRE DYNAMICS CONFIG
+# =========================
+# Each fire source is a growing circle: r(t) = r0 + growth_m_per_s * (t - t0).
+# FIRE_SOURCES: fires active from t=0.
+# NEW_FIRE_EVENTS: fires that ignite mid-simulation (within the forecast horizon).
+# Coordinates are in SUMO network metres; match against the loaded .net.xml.
 FIRE_SOURCES = [
     {"id": "F0", "t0": 0.0,   "x": 9000.0, "y": 9000.0, "r0": 3000.0, "growth_m_per_s": 0.20},
     {"id": "F0_1", "t0": 0.0,   "x": 9000.0, "y": 27000.0, "r0": 3000.0, "growth_m_per_s": 0.20},
@@ -340,7 +408,9 @@ NEW_FIRE_EVENTS = [
     {"id": "F1", "t0": 120.0, "x": 5000.0, "y": 4500.0,  "r0": 2000.0, "growth_m_per_s": 0.30},
 ]
 
-# Risk model params
+# Risk model params:
+#   FIRE_WARNING_BUFFER_M : extra buffer added to fire radius when classifying edges as blocked.
+#   RISK_DECAY_M          : exponential decay length scale for edge risk score = exp(-margin/RISK_DECAY_M).
 FIRE_WARNING_BUFFER_M = 50.0
 RISK_DECAY_M = 80.0
 
@@ -352,9 +422,20 @@ FIRE_RGBA = (255, 0, 0, 80)  # red with transparency; alpha 0 is fully transpare
 FIRE_POLY_TYPE = "wildfire"
 FIRE_LINEWIDTH = 1
 def active_fires(sim_t_s: float) -> List[Dict[str, float]]:
-    """
-    Returns a list of active fires with stable IDs so we can keep/update the same polygon in the GUI.
-    Each fire is a growing circle: r(t)=r0 + growth_m_per_s*(t-t0).
+    """Return a list of currently active fire circles at simulation time ``sim_t_s``.
+
+    Iterates both ``FIRE_SOURCES`` (always active from t=0) and ``NEW_FIRE_EVENTS``
+    (fires that ignite at a future time).  Each active fire is modelled as a growing
+    circle: ``r(t) = r0 + growth_m_per_s * (t - t0)``.
+
+    Stable ``"id"`` values allow the SUMO GUI polygon manager to update (not recreate)
+    the same polygon as the fire grows.
+
+    Args:
+        sim_t_s: Current simulation time in seconds.
+
+    Returns:
+        List of dicts, each with keys: ``id``, ``x``, ``y``, ``r``.
     """
     fires = []
     for src in (FIRE_SOURCES + NEW_FIRE_EVENTS):
@@ -390,6 +471,22 @@ def _timestamped_path(base_path: str) -> str:
 
 
 class LiveEventStream:
+    """JSONL event stream for real-time agent activity logging.
+
+    Writes one JSON record per line to a timestamped log file and optionally prints
+    a summary line to stdout.  Listener callbacks registered via ``add_listener``
+    are notified synchronously for each emitted event (used by ``WebDashboard``).
+
+    Event types emitted by the main loop include:
+        - ``departure_release``     : Agent departs from its spawn edge.
+        - ``decision_round_start``  : A new LLM decision round begins.
+        - ``llm_decision``          : LLM returned a valid route choice.
+        - ``llm_error``             : LLM call failed; fallback applied.
+        - ``message_queued``        : Agent queued a message to a peer.
+        - ``message_delivered``     : Message delivered to recipient's inbox.
+        - ``replay_apply_round``    : Replay mode applied recorded routes for this round.
+    """
+
     def __init__(self, enabled: bool, base_path: str, stdout: bool = True):
         self.enabled = bool(enabled)
         self.stdout = bool(stdout)
@@ -409,9 +506,21 @@ class LiveEventStream:
             self._fh = None
 
     def add_listener(self, callback):
+        """Register a callback to be called synchronously on each emitted event.
+
+        Args:
+            callback: Callable accepting a single dict (the event record).
+        """
         self._listeners.append(callback)
 
     def emit(self, event_type: str, summary: Optional[str] = None, **fields: Any):
+        """Emit a named event record to the log, stdout, and registered listeners.
+
+        Args:
+            event_type: Event type string (e.g., ``"llm_decision"``).
+            summary: Optional one-line human-readable summary printed to stdout.
+            **fields: Additional key-value fields merged into the event record.
+        """
         if not self.enabled:
             return
         rec = {
@@ -435,6 +544,27 @@ class LiveEventStream:
 
 
 class WebDashboard:
+    """Live web dashboard for monitoring agent messages and simulation events.
+
+    Serves a single-page HTML dashboard over HTTP using Python's built-in
+    ``ThreadingHTTPServer``.  Clients connect to ``/events`` (Server-Sent Events)
+    and receive a snapshot of recent events followed by a live stream.
+
+    Endpoints:
+        ``GET /``        : Returns the static dashboard HTML page.
+        ``GET /events``  : SSE stream of JSON event records.
+
+    The server runs on a daemon thread so it does not block the simulation loop.
+    Per-client queues (max 200 items) are drained on each SSE push; slow clients
+    are dropped gracefully when their queue is full.
+
+    Args:
+        enabled: If ``False``, the server is not started and all methods are no-ops.
+        host: Bind address (default ``"127.0.0.1"``).
+        port: HTTP port (default 8765).
+        max_events: Number of recent events to replay to newly connected clients.
+    """
+
     HTML = """<!doctype html>
 <html lang="en">
 <head>
@@ -660,6 +790,15 @@ class WebDashboard:
             self.url = None
 
     def publish(self, rec: Dict[str, Any]):
+        """Broadcast an event record to all connected SSE clients.
+
+        Appends the record to the recent-events deque (for new-client replay) and
+        enqueues it for each active SSE client.  Slow clients that fall behind are
+        evicted by dropping the oldest item from their queue.
+
+        Args:
+            rec: The event record dict to broadcast.
+        """
         if not self.enabled:
             return
         with self._lock:
@@ -695,6 +834,25 @@ class WebDashboard:
 
 
 class AgentOverlayManager:
+    """Manages SUMO GUI POI (Point-of-Interest) labels that follow each vehicle.
+
+    Each vehicle gets one floating text label in the SUMO GUI showing its current
+    advisory, chosen destination, last received message, and departure reason.
+    Labels are rendered as SUMO POIs (colored dots with text) positioned just
+    offset from the vehicle's location.
+
+    When the label content changes, the old POI is removed and a new one is created
+    (SUMO does not support in-place POI renaming, and the POI ID encodes the label).
+    When a vehicle leaves the simulation, its POI is cleaned up via ``cleanup()``.
+
+    Args:
+        enabled: If ``False``, all methods are no-ops (no TraCI calls made).
+        max_label_chars: Maximum characters in the displayed label (truncated with ``...``).
+        poi_layer: SUMO GUI layer for the POIs (higher = drawn on top).
+        poi_offset_m: Offset (metres) from the vehicle position for the label.
+        id_label_max: Maximum characters of the label used in the POI ID string.
+    """
+
     def __init__(
         self,
         enabled: bool,
@@ -775,6 +933,21 @@ class AgentOverlayManager:
         inbox: Optional[List[Dict[str, Any]]],
         chosen_name: Optional[str] = None,
     ):
+        """Create or update the POI label for one vehicle.
+
+        If the label text has changed since the last call, the old POI is removed
+        and a new one is created with the new label encoded in the POI ID.  The
+        vehicle's color is also updated to reflect the current advisory level.
+
+        Args:
+            veh_id: SUMO vehicle ID.
+            pos_xy: Current vehicle position (x, y) in SUMO coordinates.
+            advisory: Advisory label string (e.g., "Recommended", "Avoid for now").
+            briefing: Short briefing text from the forecast layer.
+            reason: Departure or decision reason string.
+            inbox: Agent's inbox list; the most recent message is shown.
+            chosen_name: Name of the currently chosen destination or route.
+        """
         if not self.enabled:
             return
 
@@ -831,6 +1004,14 @@ class AgentOverlayManager:
         self._last_label[veh_id] = label
 
     def cleanup(self, active_vehicle_ids: List[str]):
+        """Remove POI labels for vehicles that are no longer in the simulation.
+
+        Should be called once per decision round after the active vehicle list
+        has been updated.
+
+        Args:
+            active_vehicle_ids: IDs of vehicles currently active in SUMO.
+        """
         if not self.enabled:
             return
         active = set(active_vehicle_ids)
@@ -1235,6 +1416,35 @@ class OutboxMessage(BaseModel):
 
 
 class AgentMessagingBus:
+    """Inter-agent natural-language messaging bus with delivery-round scheduling.
+
+    Agents include optional outbox items in their LLM response.  The bus accepts
+    these messages at round R and delivers them at round R+1 (one-round latency),
+    simulating realistic communication delay.
+
+    **Direct messages** (``to`` = specific vehicle ID):
+        Delivered only to the named recipient if active at delivery time.
+        Undelivered messages are held for up to ``ttl_rounds`` additional rounds,
+        then dropped.
+
+    **Broadcasts** (``to`` = ``"*"``, ``"all"``, or ``"broadcast"``):
+        Fanned out to all agents active at the time of sending (not of delivery).
+        A global cap (``max_broadcasts_per_round``) limits broadcast flooding.
+
+    Per-agent message caps (``max_sends_per_agent_per_round``) prevent a single
+    agent from saturating the bus.  Inboxes are capped at ``max_inbox_messages``
+    entries; older messages are dropped from the front.
+
+    Args:
+        enabled: If ``False``, all methods are no-ops and inboxes are always empty.
+        max_message_chars: Maximum length of a single message body (truncated).
+        max_inbox_messages: Maximum messages retained per agent inbox.
+        max_sends_per_agent_per_round: Per-agent send cap per decision round.
+        max_broadcasts_per_round: Global broadcast cap per decision round.
+        ttl_rounds: Rounds a direct message waits for an offline recipient.
+        event_stream: Optional ``LiveEventStream`` to emit queue/delivery events.
+    """
+
     def __init__(
         self,
         enabled: bool,
@@ -1328,6 +1538,14 @@ class AgentMessagingBus:
         self._pending = remaining
 
     def get_inbox(self, agent_id: str) -> List[Dict[str, Any]]:
+        """Return a copy of the agent's inbox (delivered messages).
+
+        Args:
+            agent_id: Vehicle ID.
+
+        Returns:
+            List of message dicts; empty list if messaging is disabled or inbox is empty.
+        """
         if not self.enabled:
             return []
         return list(self._inboxes.get(agent_id, []))
@@ -1616,9 +1834,23 @@ def compute_edge_risk_for_fires(
     edge_id: str,
     fires: List[Tuple[float, float, float]],
 ) -> Tuple[bool, float, float]:
-    """
-    Returns (blocked, risk_score, margin_m) for a single edge against the current fire field.
-    margin_m = distance_to_edge_polyline - fire_radius, minimal over all fires.
+    """Compute the fire hazard metrics for one SUMO edge.
+
+    The margin is defined as:
+        margin_m = min_over_all_fires(dist(fire_centre, edge_polyline) - fire_radius)
+
+    A negative margin means the fire has overtaken the edge.  Risk score decays
+    exponentially with margin using the ``RISK_DECAY_M`` length scale.
+
+    Args:
+        edge_id: SUMO edge ID to evaluate.
+        fires: List of ``(x, y, r)`` tuples representing active fire circles.
+
+    Returns:
+        A ``(blocked, risk_score, margin_m)`` tuple where:
+            - ``blocked``    : True if margin_m ≤ 0 (fire overlaps the edge).
+            - ``risk_score`` : ``1.0`` if blocked; ``exp(-margin/RISK_DECAY_M)`` otherwise.
+            - ``margin_m``   : Minimum clearance in metres (can be negative).
     """
     shape = EDGE_SHAPE.get(edge_id)
     if (not fires) or (not shape) or len(shape) < 2:
@@ -1638,6 +1870,25 @@ def compute_edge_risk_for_fires(
 
 
 def process_pending_departures(step_idx: int):
+    """Evaluate departure readiness for all not-yet-spawned agents.
+
+    Called every simulation step.  Only runs the full belief-update and LLM pipeline
+    on decision ticks (multiples of ``decision_period_steps``); all other steps return
+    immediately after checking whether any vehicle's scheduled depart time has passed.
+
+    For each not-yet-spawned vehicle whose depart time has been reached:
+        1. Samples a noisy/delayed environment signal for the spawn edge.
+        2. Builds a social signal (empty inbox for pre-departure agents).
+        3. Updates the Bayesian belief distribution.
+        4. Evaluates the three-clause departure decision rule.
+        5. If departing, adds the vehicle to the SUMO simulation via TraCI.
+
+    In replay mode, vehicles are added immediately when their depart time is reached
+    without running the departure decision logic.
+
+    Args:
+        step_idx: The current SUMO simulation step index.
+    """
     sim_t = traci.simulation.getTime()
     delta_t = traci.simulation.getDeltaT()
     decision_period_steps = max(1, int(round(DECISION_PERIOD_S / max(1e-9, delta_t))))
@@ -1865,6 +2116,28 @@ def process_pending_departures(step_idx: int):
 # Step 7: Define Functions
 # =========================
 def process_vehicles(step_idx: int):
+    """Process all active vehicles: log positions, run the LLM decision pipeline.
+
+    Called every simulation step.  The LLM pipeline (belief update → route scoring →
+    GPT-4o-mini call → route assignment) runs only on decision ticks.  On non-decision
+    steps, vehicle positions and exposure samples are still logged.
+
+    Pipeline per vehicle (on decision ticks):
+        1. Compute current-edge and route-head fire margins.
+        2. Sample noisy/delayed environment signal and build social signal from inbox.
+        3. Update Bayesian belief; derive psychology scalars.
+        4. Build fire forecast and route-head forecast.
+        5. Annotate destination/route menu with expected utility scores.
+        6. Filter menu and signals to match the active information regime.
+        7. Assemble the LLM prompt (env dict + policy text + scenario suffix).
+        8. Call OpenAI API (or apply replay schedule in replay mode).
+        9. Validate the LLM's choice index; apply the chosen route via TraCI.
+        10. Log the decision to the replay JSONL and metrics collector.
+        11. Optionally send agent messages and update SUMO GUI overlays.
+
+    Args:
+        step_idx: The current SUMO simulation step index.
+    """
     global decision_round_counter
 
     sim_t_s = traci.simulation.getTime()
@@ -2974,7 +3247,20 @@ def process_vehicles(step_idx: int):
         overlays.cleanup(vehicles_list)
 
 def _circle_polygon(cx: float, cy: float, r: float, n: int) -> List[Tuple[float, float]]:
-    """Approximate a circle by an n-vertex polygon (list of (x,y))."""
+    """Approximate a circle as an n-vertex polygon for SUMO GUI rendering.
+
+    Used by ``update_fire_shapes`` to draw fire perimeters as filled SUMO polygons.
+    More vertices produce a smoother circle at the cost of rendering overhead.
+
+    Args:
+        cx: X coordinate of the circle centre (SUMO metres).
+        cy: Y coordinate of the circle centre (SUMO metres).
+        r: Radius in metres; clamped to a minimum of 0.1 to avoid degenerate polygons.
+        n: Number of polygon vertices (``FIRE_POLY_POINTS``; default 48).
+
+    Returns:
+        List of ``(x, y)`` tuples forming the polygon boundary.
+    """
     if r <= 0:
         r = 0.1
     pts = []
@@ -2984,12 +3270,18 @@ def _circle_polygon(cx: float, cy: float, r: float, n: int) -> List[Tuple[float,
     return pts
 
 def update_fire_shapes(sim_t_s: float):
-    """
-    Draw/Update fire circles as polygons in SUMO-GUI.
-    Uses:
-      - traci.polygon.add(...) to create polygons :contentReference[oaicite:4]{index=4}
-      - traci.polygon.setShape(...) to update radius/spread over time :contentReference[oaicite:5]{index=5}
-      - traci.polygon.setColor(...), setFilled(...) for visualization :contentReference[oaicite:6]{index=6}
+    """Draw or update fire-circle polygons in the SUMO GUI.
+
+    For each active fire, computes the polygon vertex list and either creates a new
+    SUMO polygon (on first appearance) or updates the existing one (``setShape`` /
+    ``setColor``).  Polygons persist until the simulation ends; the commented-out
+    cleanup block at the bottom of the function can be re-enabled if fire extinction
+    events are added in the future.
+
+    Only runs when ``FIRE_DRAW_ENABLED`` is True.  Has no effect in headless mode.
+
+    Args:
+        sim_t_s: Current simulation time in seconds.
     """
     if not FIRE_DRAW_ENABLED:
         return

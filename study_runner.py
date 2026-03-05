@@ -1,3 +1,27 @@
+"""End-to-end calibration study orchestrator.
+
+``study_runner.py`` is the top-level entry point for running a complete parameter
+calibration study.  It chains three stages:
+
+    1. **Experiment sweep** (``experiments.run_parameter_sweep``):
+       Spawns one headless ``Traci_GPT2.py`` subprocess per grid cell and collects
+       the metrics JSON and replay JSONL for each case.
+
+    2. **Calibration fit** (``calibration.fit_agent_parameters``):
+       Scores each run against the reference metrics and ranks candidates by
+       goodness of fit.
+
+    3. **Report export**:
+       Writes three output artifacts to a timestamped study directory:
+           - ``experiments/experiment_results.json``   : Full sweep results.
+           - ``experiments/experiment_results.csv``    : Flat CSV summary.
+           - ``calibration_report.json``               : Ranked calibration results.
+           - ``study_report.json``                     : Top-level study summary.
+
+Each call to ``run_study`` creates a fresh timestamped directory under ``output_dir``
+so studies do not overwrite each other.
+"""
+
 import argparse
 import json
 import sys
@@ -71,6 +95,31 @@ def run_study(
     weights: Optional[Dict[str, float]] = None,
     top_k: int = 5,
 ) -> Dict[str, Any]:
+    """Run a complete parameter calibration study: sweep → fit → report.
+
+    Creates a timestamped study directory, runs all grid cases, fits against the
+    reference, and writes summary reports.
+
+    Args:
+        reference_path: Path to the reference metrics JSON (target behaviour).
+        script_path: Path to ``Traci_GPT2.py``.
+        python_executable: Python interpreter; defaults to ``sys.executable``.
+        output_dir: Base directory for all study outputs.
+        sumo_binary: SUMO binary name (``"sumo"`` for headless).
+        run_mode: ``"record"`` or ``"replay"``.
+        timeout_s: Per-case subprocess timeout in seconds.
+        sigma_values: ``INFO_SIGMA`` values to sweep.
+        delay_values: ``INFO_DELAY_S`` values to sweep.
+        trust_values: ``DEFAULT_THETA_TRUST`` values to sweep.
+        scenario_values: Scenario mode strings to sweep.
+        messaging_enabled: Whether inter-agent messaging is active for all cases.
+        weights: Per-metric calibration weight overrides.
+        top_k: Number of top-ranked candidates to include in the calibration report.
+
+    Returns:
+        A study summary dict containing timing information, case counts, file paths,
+        and the best-fit parameter configuration.
+    """
     study_dir = _timestamped_study_dir(output_dir)
     experiments_dir = str(Path(study_dir) / "experiments")
     reference = load_reference_scenario(reference_path)

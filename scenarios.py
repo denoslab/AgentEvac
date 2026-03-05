@@ -1,6 +1,34 @@
+"""Information-regime configuration and signal filtering for evacuation scenarios.
+
+AgentEvac models three empirically motivated information regimes that differ in how
+much official hazard information agents receive each decision round:
+
+    **no_notice** — No official warning exists yet.
+        Agents rely solely on their own noisy margin observations and natural-language
+        messages from neighbours.  Menu items contain only minimal fields (name,
+        reachability).  This represents the typical onset of a rapidly spreading wildfire
+        before emergency services have issued formal guidance.
+
+    **alert_guided** — Official alerts broadcast general hazard information.
+        Agents receive a full fire forecast summary and per-edge risk data for their
+        current location, but do *not* receive route-specific advisories or expected
+        utility scores.  They must synthesize hazard information themselves.
+
+    **advice_guided** — Official guidance provides route-oriented recommendations.
+        Agents receive the full forecast, per-route-head forecasts, advisory labels
+        (Recommended / Use with caution / Avoid for now), and expected utility scores.
+        This is the highest-information regime and models scenarios with active
+        emergency operations-centre support.
+
+The key functions ``apply_scenario_to_signals`` and ``filter_menu_for_scenario`` strip
+fields from signals and menus based on the active regime before the data is embedded in
+the LLM prompt.  This ensures information asymmetries are faithfully reproduced.
+"""
+
 from typing import Any, Dict, List, Tuple
 
 
+# All valid scenario identifiers.
 SCENARIO_CHOICES: Tuple[str, ...] = (
     "no_notice",
     "alert_guided",
@@ -9,6 +37,24 @@ SCENARIO_CHOICES: Tuple[str, ...] = (
 
 
 def load_scenario_config(mode: str) -> Dict[str, Any]:
+    """Return the configuration dict for a given information regime.
+
+    The config controls which data fields are surfaced to agents in the LLM prompt.
+
+    Args:
+        mode: One of ``"no_notice"``, ``"alert_guided"``, or ``"advice_guided"``.
+            Any unrecognised value is treated as ``"advice_guided"``.
+
+    Returns:
+        A dict with keys:
+            - ``mode``                          : Normalised mode string.
+            - ``title``                         : Human-readable scenario name.
+            - ``description``                   : One-sentence scenario description.
+            - ``forecast_visible``              : Whether fire forecast summary is shown.
+            - ``route_head_forecast_visible``   : Whether per-route-head risk is shown.
+            - ``official_route_guidance_visible``: Whether advisory labels are shown.
+            - ``expected_utility_visible``      : Whether computed utility scores are shown.
+    """
     name = str(mode).strip().lower()
     if name == "no_notice":
         return {
@@ -52,11 +98,32 @@ def apply_scenario_to_signals(
     env_signal: Dict[str, Any],
     forecast: Dict[str, Any],
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Filter environment and forecast signals to match the active information regime.
+
+    For ``no_notice``: strips the environment signal to subjective observations only
+    (observed_state, delay flags) and replaces the forecast with a placeholder indicating
+    no official forecast exists.
+
+    For ``alert_guided``: preserves the forecast summary and current-edge risk, but
+    removes route-head forecast data (agents see *what* is burning but not *which route*
+    is safer).
+
+    For ``advice_guided``: passes both signals through unmodified.
+
+    Args:
+        mode: Active scenario mode string.
+        env_signal: Full environment signal dict from the information model.
+        forecast: Full forecast dict from ``forecast_layer.render_forecast_briefing``.
+
+    Returns:
+        A ``(env_prompt, forecast_prompt)`` tuple filtered for the given regime.
+    """
     cfg = load_scenario_config(mode)
     env_prompt = dict(env_signal or {})
     forecast_prompt = dict(forecast or {})
 
     if cfg["mode"] == "no_notice":
+        # Strip everything except the raw perceptual observation and delay metadata.
         env_prompt = {
             "observed_state": env_prompt.get("observed_state"),
             "is_delayed": bool(env_prompt.get("is_delayed", False)),
@@ -71,6 +138,7 @@ def apply_scenario_to_signals(
         return env_prompt, forecast_prompt
 
     if cfg["mode"] == "alert_guided":
+        # Keep the global fire forecast but suppress route-specific advice.
         route_head = dict(forecast_prompt.get("route_head") or {})
         forecast_prompt = {
             "available": True,
@@ -85,6 +153,7 @@ def apply_scenario_to_signals(
         }
         return env_prompt, forecast_prompt
 
+    # advice_guided: pass everything through unchanged.
     return env_prompt, forecast_prompt
 
 
@@ -94,21 +163,44 @@ def filter_menu_for_scenario(
     *,
     control_mode: str,
 ) -> List[Dict[str, Any]]:
+    """Strip advisory and utility fields from each menu option based on the active regime.
+
+    In ``no_notice`` mode, menu items are aggressively reduced to the minimal set
+    the agent could plausibly know without official guidance (name, reachability for
+    destinations; name and edge count for routes).
+
+    In ``alert_guided`` mode, advisory labels and utility scores are removed but other
+    risk metrics (risk_sum, blocked_edges, min_margin_m) remain visible.
+
+    In ``advice_guided`` mode, menu items are returned unmodified.
+
+    Args:
+        mode: Active scenario mode string.
+        menu: List of destination or route dicts (already annotated with utility scores).
+        control_mode: ``"destination"`` or ``"route"``; determines which keys to retain
+            in the ``no_notice`` minimum-information filter.
+
+    Returns:
+        A new list of dicts with scenario-inappropriate fields removed.
+    """
     cfg = load_scenario_config(mode)
     prompt_menu: List[Dict[str, Any]] = []
 
     for item in menu:
         out = dict(item)
         if not cfg["official_route_guidance_visible"]:
+            # Remove advisory labels produced by the operator briefing logic.
             out.pop("advisory", None)
             out.pop("briefing", None)
             out.pop("reasons", None)
 
         if not cfg["expected_utility_visible"]:
+            # Remove pre-computed utility scores so agents cannot use them as a shortcut.
             out.pop("expected_utility", None)
             out.pop("utility_components", None)
 
         if cfg["mode"] == "no_notice":
+            # Reduce to the bare minimum an agent could reasonably know without warnings.
             if control_mode == "destination":
                 keep_keys = {"idx", "name", "dest_edge", "reachable", "note"}
             else:
@@ -121,6 +213,17 @@ def filter_menu_for_scenario(
 
 
 def scenario_prompt_suffix(mode: str) -> str:
+    """Return an LLM instruction suffix that contextualises the active information regime.
+
+    Injected at the end of the LLM policy string so the model understands what
+    information it legitimately has access to and how to frame its decision.
+
+    Args:
+        mode: Active scenario mode string.
+
+    Returns:
+        A one-to-two sentence instruction string for the LLM.
+    """
     cfg = load_scenario_config(mode)
     if cfg["mode"] == "no_notice":
         return (

@@ -1,3 +1,26 @@
+"""Parameter sweep driver for AgentEvac calibration experiments.
+
+This module builds a Cartesian-product grid of agent parameters and runs one
+simulation subprocess per grid cell, collecting the resulting metrics and replay files.
+
+**Parameter axes:**
+    - ``info_sigma``    : Gaussian noise standard deviation on margin observations (metres).
+    - ``info_delay_s``  : Information delay in seconds (stale observation replay).
+    - ``theta_trust``   : Social-signal trust weight ∈ [0, 1].
+    - ``scenario``      : Information regime ("no_notice", "alert_guided", "advice_guided").
+
+Each case is run by spawning ``Traci_GPT2.py`` as a subprocess with the appropriate
+environment variables set (``INFO_SIGMA``, ``INFO_DELAY_S``, ``DEFAULT_THETA_TRUST``).
+The SUMO GUI is suppressed (``--sumo-binary sumo``) for headless batch execution.
+
+**Outputs** (written to ``output_dir``):
+    - ``routes_<case_id>.jsonl``    : Recorded LLM route decisions (for replay).
+    - ``metrics_<case_id>.json``    : Run-level KPI summary.
+    - ``stdout_<case_id>.log``      : Full stdout + stderr of the subprocess.
+    - ``experiment_results.json``   : Aggregated list of all case result dicts.
+    - ``experiment_results.csv``    : Flat CSV of key result fields.
+"""
+
 import argparse
 import csv
 import itertools
@@ -12,6 +35,14 @@ from typing import Any, Dict, List, Optional
 
 
 def _parse_float_list(raw: str) -> List[float]:
+    """Parse a comma-separated string of floats into a list.
+
+    Args:
+        raw: Comma-separated numeric string (e.g., ``"20,40,60"``).
+
+    Returns:
+        List of float values.
+    """
     values = []
     for part in str(raw).split(","):
         item = part.strip()
@@ -22,6 +53,14 @@ def _parse_float_list(raw: str) -> List[float]:
 
 
 def _parse_str_list(raw: str) -> List[str]:
+    """Parse a comma-separated string into a list of non-empty strings.
+
+    Args:
+        raw: Comma-separated string (e.g., ``"no_notice,advice_guided"``).
+
+    Returns:
+        List of stripped non-empty strings.
+    """
     values = []
     for part in str(raw).split(","):
         item = part.strip()
@@ -53,6 +92,25 @@ def build_experiment_grid(
     scenario_modes: Optional[List[str]] = None,
     base_overrides: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
+    """Build a Cartesian-product experiment grid from parameter value lists.
+
+    Defaults apply when a parameter list is not provided:
+        - sigma_values    : [40.0]
+        - delay_values    : [0.0]
+        - trust_values    : [0.5]
+        - scenario_modes  : ["advice_guided"]
+
+    Args:
+        sigma_values: List of ``INFO_SIGMA`` values to sweep.
+        delay_values: List of ``INFO_DELAY_S`` values to sweep.
+        trust_values: List of ``DEFAULT_THETA_TRUST`` values to sweep.
+        scenario_modes: List of scenario mode strings to sweep.
+        base_overrides: Additional key-value pairs merged into every case dict
+            (e.g., ``{"messaging_enabled": True}``).
+
+    Returns:
+        List of case config dicts, one per grid cell.
+    """
     sigma_seq = sigma_values if sigma_values is not None else [40.0]
     delay_seq = delay_values if delay_values is not None else [0.0]
     trust_seq = trust_values if trust_values is not None else [0.5]
@@ -103,6 +161,28 @@ def run_experiment_case(
     run_mode: str = "record",
     timeout_s: Optional[float] = None,
 ) -> Dict[str, Any]:
+    """Execute one parameter-grid case by spawning a ``Traci_GPT2.py`` subprocess.
+
+    Constructs the CLI command and environment from ``case_cfg``, runs the process,
+    captures stdout/stderr, and extracts the metrics and replay file paths from the
+    subprocess stdout using fixed prefix patterns.
+
+    Args:
+        case_cfg: Case configuration dict (from ``build_experiment_grid``), containing
+            at minimum ``info_sigma``, ``info_delay_s``, ``theta_trust``, and
+            ``scenario`` keys.
+        script_path: Path to the main simulation script.
+        python_executable: Python interpreter to use; defaults to ``sys.executable``.
+        output_dir: Directory for output files.
+        sumo_binary: SUMO binary name; use ``"sumo"`` for headless batch runs.
+        run_mode: ``"record"`` or ``"replay"``.
+        timeout_s: Optional subprocess timeout in seconds.
+
+    Returns:
+        A result dict with fields including ``case_id``, ``status``, ``returncode``,
+        ``elapsed_s``, ``replay_path``, ``metrics_path``, ``events_path``,
+        ``stdout_log``, and ``stdout_tail``.
+    """
     python_bin = python_executable or sys.executable
     script_file = Path(script_path).resolve()
     out_dir = Path(output_dir)
@@ -197,6 +277,23 @@ def run_parameter_sweep(
     run_mode: str = "record",
     timeout_s: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
+    """Run all cases in the experiment grid sequentially.
+
+    Cases run one at a time (no parallelism) to avoid SUMO port conflicts and to
+    keep resource usage predictable.
+
+    Args:
+        grid: List of case config dicts from ``build_experiment_grid``.
+        script_path: Path to the main simulation script.
+        python_executable: Python interpreter to use.
+        output_dir: Directory for all case output files.
+        sumo_binary: SUMO binary name.
+        run_mode: ``"record"`` or ``"replay"``.
+        timeout_s: Per-case subprocess timeout in seconds.
+
+    Returns:
+        List of result dicts (one per grid case) from ``run_experiment_case``.
+    """
     results: List[Dict[str, Any]] = []
     for idx, raw_case in enumerate(grid, start=1):
         case_cfg = dict(raw_case)
@@ -222,6 +319,19 @@ def export_experiment_results(
     output_dir: str,
     stem: str = "experiment_results",
 ) -> Dict[str, str]:
+    """Write experiment results to JSON (full) and CSV (flat key subset) files.
+
+    The JSON file contains all result fields.  The CSV file contains a flattened
+    subset suitable for quick inspection in spreadsheet tools.
+
+    Args:
+        results: List of result dicts from ``run_parameter_sweep``.
+        output_dir: Directory to write output files.
+        stem: Base filename stem (without extension).
+
+    Returns:
+        Dict with ``"json"`` and ``"csv"`` keys mapping to the written file paths.
+    """
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     json_path = out_dir / f"{stem}.json"

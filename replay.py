@@ -1,3 +1,27 @@
+"""Record and replay LLM-driven route decisions for deterministic re-runs.
+
+This module provides ``RouteReplay``, a class that operates in one of two modes:
+
+**record** — During a live simulation run, every LLM-applied route change is logged
+    to a JSONL file (one JSON record per line) along with agent cognition snapshots
+    and LLM dialog transcripts.  Only ``route_change`` events are used for replay;
+    cognition and dialog events are write-only metadata for research/debugging.
+
+    Three output files are created:
+        - ``routes_<run_id>.jsonl``         — Replayable route-change schedule.
+        - ``routes_<run_id>.dialogs.log``   — Human-readable LLM dialog transcript.
+        - ``routes_<run_id>.dialogs.csv``   — Machine-readable LLM dialog table.
+
+**replay** — Loads a previously recorded JSONL file and, on each simulation step,
+    applies the scheduled ``route_change`` events to the matching vehicle via
+    ``traci.vehicle.setRoute()``.  This allows exact behavioural reproduction without
+    making any OpenAI API calls.
+
+Important constraint: ``traci.vehicle.setRoute()`` requires that the first edge in the
+supplied route is the vehicle's *current* edge.  Both record and replay logic enforce
+this by slicing the stored route to start from the current edge when needed.
+"""
+
 import traci
 import json
 import os
@@ -5,6 +29,8 @@ import csv
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
+
+
 class RouteReplay:
     """
     Record/replay LLM-applied routes.
@@ -54,12 +80,18 @@ class RouteReplay:
             raise ValueError(f"Unknown RUN_MODE={mode}. Use 'record' or 'replay'.")
 
     def _write_jsonl(self, rec: Dict[str, Any]):
+        """Append a single JSON record to the JSONL log file.
+
+        Args:
+            rec: Dict to serialize and append; ignored if not in record mode.
+        """
         if self.mode != "record" or self._fh is None:
             return
         self._fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
         self._fh.flush()
 
     def close(self):
+        """Flush and close all open file handles.  Safe to call more than once."""
         if self._fh:
             self._fh.flush()
             self._fh.close()
@@ -76,6 +108,17 @@ class RouteReplay:
 
     @staticmethod
     def _load_schedule(path: str):
+        """Load and index ``route_change`` events from a JSONL file by step index.
+
+        Non-``route_change`` events (cognition, metrics snapshots, dialogs) are
+        silently ignored so replay only reproduces the route-assignment actions.
+
+        Args:
+            path: Path to the recorded JSONL file.
+
+        Returns:
+            Dict mapping ``step_idx`` → {``veh_id`` → record dict}.
+        """
         schedule = {}
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
@@ -94,6 +137,14 @@ class RouteReplay:
 
     @staticmethod
     def _build_record_path(base_path: str) -> str:
+        """Build a unique timestamped output path for the main JSONL log.
+
+        Args:
+            base_path: Base file path template.
+
+        Returns:
+            A unique path string with a timestamp suffix.
+        """
         base = Path(base_path)
         ext = base.suffix or ".jsonl"
         stem = base.stem if base.suffix else base.name
@@ -108,11 +159,27 @@ class RouteReplay:
 
     @staticmethod
     def _build_dialog_path(route_log_path: str) -> str:
+        """Derive the human-readable dialog log path from the route log path.
+
+        Args:
+            route_log_path: Path of the main JSONL route log.
+
+        Returns:
+            Path string for the ``.dialogs.log`` file.
+        """
         route_path = Path(route_log_path)
         return str(route_path.with_name(f"{route_path.stem}.dialogs.log"))
 
     @staticmethod
     def _build_dialog_csv_path(route_log_path: str) -> str:
+        """Derive the CSV dialog log path from the route log path.
+
+        Args:
+            route_log_path: Path of the main JSONL route log.
+
+        Returns:
+            Path string for the ``.dialogs.csv`` file.
+        """
         route_path = Path(route_log_path)
         return str(route_path.with_name(f"{route_path.stem}.dialogs.csv"))
 
@@ -129,6 +196,24 @@ class RouteReplay:
         applied_route_edges: List[str],
         reason: Optional[str] = None,
     ):
+        """Log one LLM-applied route change to the JSONL file.
+
+        Trims ``applied_route_edges`` to start from ``current_edge_before`` so the
+        stored route is immediately compatible with ``traci.vehicle.setRoute()`` during
+        replay without additional adjustment.
+
+        Args:
+            step: SUMO simulation step index.
+            sim_t_s: Simulation time in seconds.
+            veh_id: Vehicle ID.
+            control_mode: ``"destination"`` or ``"route"``.
+            choice_idx: Index of the chosen option in the menu.
+            chosen_name: Name of the chosen destination/route.
+            chosen_edge: Target destination edge (destination mode) or ``None``.
+            current_edge_before: Edge the vehicle was on when the decision was applied.
+            applied_route_edges: Full edge list passed to SUMO.
+            reason: Optional human-readable reason string from the LLM.
+        """
         if self.mode != "record" or self._fh is None:
             return
 

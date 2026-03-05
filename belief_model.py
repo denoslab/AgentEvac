@@ -1,12 +1,52 @@
+"""Bayesian belief-update pipeline for wildfire hazard assessment.
+
+Each agent maintains a probability distribution over three hazard states:
+    - ``p_safe``   : fire is far enough that the agent's current position is safe.
+    - ``p_risky``  : fire is close enough to warrant caution but not immediate danger.
+    - ``p_danger`` : fire is imminent; departure is likely warranted.
+
+The update pipeline (exposed via ``update_agent_belief``) runs once per decision period:
+    1. Map the observed margin (meters from fire edge) to a prior triplet
+       (``categorize_hazard_state``).
+    2. If social messages are present, fuse the environment-derived prior with a
+       social-signal belief weighted by ``theta_trust`` (``fuse_env_and_social_beliefs``).
+    3. Apply temporal smoothing using a fixed inertia factor to avoid belief whiplash
+       (``smooth_belief``).
+    4. Compute Shannon entropy to quantify uncertainty (``compute_belief_entropy``).
+    5. Normalize entropy to [0, 1] and bucket it into Low / Medium / High
+       (``normalize_entropy``, ``bucket_uncertainty``).
+"""
+
 import math
 from typing import Any, Dict
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
+    """Clamp ``value`` to the closed interval [``lo``, ``hi``].
+
+    Args:
+        value: The value to clamp.
+        lo: Lower bound (inclusive).
+        hi: Upper bound (inclusive).
+
+    Returns:
+        ``value`` clipped to [``lo``, ``hi``].
+    """
     return max(lo, min(hi, float(value)))
 
 
 def _normalize_triplet(belief: Dict[str, float]) -> Dict[str, float]:
+    """L1-normalize a {p_safe, p_risky, p_danger} belief dict to sum to 1.
+
+    If the total probability mass is zero or negative (degenerate input), returns a
+    uniform distribution so downstream code always receives a valid probability vector.
+
+    Args:
+        belief: Dict with keys "p_safe", "p_risky", "p_danger".
+
+    Returns:
+        A new dict with the same keys whose values sum to 1.0.
+    """
     total = float(
         belief.get("p_safe", 0.0) +
         belief.get("p_risky", 0.0) +
@@ -22,6 +62,24 @@ def _normalize_triplet(belief: Dict[str, float]) -> Dict[str, float]:
 
 
 def categorize_hazard_state(signal: Dict[str, Any]) -> Dict[str, float]:
+    """Map an observed margin (meters from fire edge) to a hazard-state prior.
+
+    Uses ``observed_margin_m`` if available, falling back to ``base_margin_m``.
+    If neither is present (e.g., no fire active), returns a uniform prior.
+
+    Threshold rationale:
+        - ≤ 0 m   : fire has reached / overtaken the edge  → near-certain danger.
+        - ≤ 100 m : fire front is on the street block       → high danger.
+        - ≤ 300 m : fire within roughly two city blocks     → risky (watch closely).
+        - ≤ 700 m : fire is a few blocks away               → elevated but manageable.
+        - > 700 m : fire is well clear of the route         → predominantly safe.
+
+    Args:
+        signal: Environment signal dict, typically from ``information_model.sample_environment_signal``.
+
+    Returns:
+        A normalized {p_safe, p_risky, p_danger} dict representing the categorical prior.
+    """
     margin = signal.get("observed_margin_m")
     if margin is None:
         margin = signal.get("base_margin_m")
@@ -45,6 +103,20 @@ def fuse_env_and_social_beliefs(
     social_belief: Dict[str, float],
     theta_trust: float,
 ) -> Dict[str, float]:
+    """Fuse an environmental belief with a social-signal belief via weighted average.
+
+    The agent's trust parameter ``theta_trust`` ∈ [0, 1] determines how much weight
+    is given to peer messages relative to its own observations:
+        fused = (1 - theta_trust) * env_belief + theta_trust * social_belief
+
+    Args:
+        env_belief: Belief derived from the agent's own hazard observations.
+        social_belief: Belief inferred from neighbor inbox messages.
+        theta_trust: Weight given to social signals; 0 = ignore peers, 1 = ignore self.
+
+    Returns:
+        A normalized {p_safe, p_risky, p_danger} dict representing the fused belief.
+    """
     social_weight = _clamp(theta_trust, 0.0, 1.0)
     env_weight = 1.0 - social_weight
     fused = {
@@ -60,6 +132,23 @@ def smooth_belief(
     new_belief: Dict[str, float],
     inertia: float = 0.35,
 ) -> Dict[str, float]:
+    """Blend the previous belief with a newly computed belief using exponential smoothing.
+
+    Prevents erratic belief flips between decision rounds by retaining a fraction
+    (``inertia``) of the prior state:
+        smoothed = inertia * prev + (1 - inertia) * new
+
+    A higher inertia value means the agent is slower to update beliefs (more conservative).
+    The default of 0.35 balances responsiveness with stability.
+
+    Args:
+        prev_belief: The agent's belief from the previous decision round.
+        new_belief: The freshly computed belief for the current round.
+        inertia: Mixing weight for the previous belief ∈ [0, 0.999].
+
+    Returns:
+        A normalized {p_safe, p_risky, p_danger} dict representing the smoothed belief.
+    """
     smooth = _clamp(inertia, 0.0, 0.999)
     prev = _normalize_triplet(prev_belief)
     new = _normalize_triplet(new_belief)
@@ -72,6 +161,18 @@ def smooth_belief(
 
 
 def compute_belief_entropy(belief: Dict[str, float]) -> float:
+    """Compute the Shannon entropy of a {p_safe, p_risky, p_danger} belief distribution.
+
+    Entropy H = -Σ p_i * log(p_i) over the three states.  The maximum possible value
+    for a 3-state uniform distribution is log(3) ≈ 1.099 nats.  A floor of 1e-12 is
+    applied to each probability to avoid log(0) singularities.
+
+    Args:
+        belief: The belief distribution dict (will be normalized internally).
+
+    Returns:
+        Shannon entropy in nats (≥ 0).
+    """
     norm = _normalize_triplet(belief)
     total = 0.0
     for key in ("p_safe", "p_risky", "p_danger"):
@@ -81,6 +182,17 @@ def compute_belief_entropy(belief: Dict[str, float]) -> float:
 
 
 def normalize_entropy(entropy: float) -> float:
+    """Normalize Shannon entropy to the range [0, 1] relative to the 3-state maximum.
+
+    Divides raw entropy by log(3) so that a uniform distribution maps to 1.0 and a
+    fully confident belief maps to 0.0.
+
+    Args:
+        entropy: Raw Shannon entropy in nats.
+
+    Returns:
+        Normalized entropy ∈ [0, 1].
+    """
     max_entropy = math.log(3.0)
     if max_entropy <= 0.0:
         return 0.0
@@ -88,6 +200,22 @@ def normalize_entropy(entropy: float) -> float:
 
 
 def bucket_uncertainty(entropy_norm: float) -> str:
+    """Discretize normalized entropy into a human-readable uncertainty label.
+
+    Thresholds:
+        - "Low"    : entropy_norm ≤ 0.33  (agent is fairly confident)
+        - "Medium" : entropy_norm ≤ 0.67  (moderate uncertainty)
+        - "High"   : entropy_norm >  0.67  (agent is highly uncertain)
+
+    The label is included in the LLM prompt so the model can reason about its own
+    epistemic state without having to interpret raw entropy values.
+
+    Args:
+        entropy_norm: Normalized entropy ∈ [0, 1].
+
+    Returns:
+        One of "Low", "Medium", or "High".
+    """
     val = _clamp(entropy_norm, 0.0, 1.0)
     if val <= 0.33:
         return "Low"
@@ -103,6 +231,30 @@ def update_agent_belief(
     theta_trust: float,
     inertia: float = 0.35,
 ) -> Dict[str, Any]:
+    """Run the full Bayesian belief-update pipeline for one decision round.
+
+    Steps:
+        1. Convert environment signal margin to a categorical prior (``categorize_hazard_state``).
+        2. If peer messages exist, fuse env prior with social belief via ``theta_trust``
+           (``fuse_env_and_social_beliefs``); otherwise use env prior directly.
+        3. Apply temporal smoothing against the previous belief (``smooth_belief``).
+        4. Compute and normalize Shannon entropy; bucket into Low / Medium / High.
+
+    Args:
+        prev_belief: The agent's belief dict from the previous decision round.
+        env_signal: Environment signal produced by ``information_model.sample_environment_signal``.
+        social_signal: Social signal produced by ``information_model.build_social_signal``.
+        theta_trust: Social-signal trust weight ∈ [0, 1] (from agent profile).
+        inertia: Temporal smoothing factor ∈ [0, 0.999].
+
+    Returns:
+        An enriched belief dict containing:
+            - p_safe, p_risky, p_danger    : smoothed posterior probabilities
+            - entropy, entropy_norm        : Shannon entropy (raw and normalized)
+            - uncertainty_bucket           : "Low", "Medium", or "High"
+            - env_weight, social_weight    : fusion weights applied this round
+            - env_belief, social_belief    : component beliefs before fusion
+    """
     env_belief = categorize_hazard_state(env_signal)
 
     social_count = int(social_signal.get("message_count", 0) or 0)
@@ -113,6 +265,7 @@ def update_agent_belief(
         social_weight = _clamp(theta_trust, 0.0, 1.0)
         env_weight = 1.0 - social_weight
     else:
+        # No messages in inbox: rely entirely on own environmental observation.
         social_belief = {"p_safe": 1.0 / 3.0, "p_risky": 1.0 / 3.0, "p_danger": 1.0 / 3.0}
         fused = dict(env_belief)
         social_weight = 0.0
