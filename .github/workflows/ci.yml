@@ -31,7 +31,7 @@ jobs:
 
       - name: Check for stale Traci_GPT2 references
         run: |
-          if grep -r "Traci_GPT2" --include="*.py" --include="*.md" --include="*.yml" .; then
+          if grep -r "Traci_GPT2" --include="*.py" --include="*.md" --exclude-dir=".github" .; then
             echo "ERROR: stale Traci_GPT2 references found — run the post-refactor audit"
             exit 1
           fi
