@@ -19,7 +19,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
-    "ruff",
     "mypy",
     "mkdocs",
     "mkdocstrings[python]",

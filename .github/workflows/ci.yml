@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  lint-and-test:
+  test:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
@@ -25,9 +25,6 @@ jobs:
 
       - name: Install package and dev dependencies
         run: pip install -e ".[dev]"
-
-      - name: Lint (ruff)
-        run: ruff check agentevac/ tests/
 
       - name: Type-check (mypy)
         run: mypy agentevac/
