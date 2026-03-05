@@ -1,7 +1,7 @@
 """Fire forecast construction and route-head risk summarization.
 
 This module transforms raw fire geometry data (circles with positions and radii from
-``Traci_GPT2.active_fires``) into structured forecast objects and natural-language
+``agentevac.simulation.main.active_fires``) into structured forecast objects and natural-language
 briefings that are embedded in the LLM prompt.
 
 **Fire forecast** (``build_fire_forecast``):
@@ -11,7 +11,7 @@ briefings that are embedded in the LLM prompt.
 
 **Edge risk** (``estimate_edge_forecast_risk``):
     Queries the caller-supplied ``edge_risk_fn`` (a thin wrapper around
-    ``Traci_GPT2.compute_edge_risk_for_fires``) to obtain ``(blocked, risk_score,
+    ``agentevac.simulation.main.compute_edge_risk_for_fires``) to obtain ``(blocked, risk_score,
     margin_m)`` for a single edge, then classifies the result into a margin band.
 
 **Route-head summary** (``summarize_route_forecast``):
@@ -146,7 +146,7 @@ def estimate_edge_forecast_risk(
     """Query the risk of a single edge against the projected fire field.
 
     Delegates the geometry computation to ``edge_risk_fn``, which is typically a
-    closure around ``Traci_GPT2.compute_edge_risk_for_fires`` evaluated at the
+    closure around ``agentevac.simulation.main.compute_edge_risk_for_fires`` evaluated at the
     *projected* fire positions (``sim_t + FORECAST_HORIZON_S``).
 
     Args:

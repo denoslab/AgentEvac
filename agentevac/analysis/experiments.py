@@ -9,7 +9,7 @@ simulation subprocess per grid cell, collecting the resulting metrics and replay
     - ``theta_trust``   : Social-signal trust weight ∈ [0, 1].
     - ``scenario``      : Information regime ("no_notice", "alert_guided", "advice_guided").
 
-Each case is run by spawning ``Traci_GPT2.py`` as a subprocess with the appropriate
+Each case is run by spawning ``agentevac.simulation.main`` as a subprocess with the appropriate
 environment variables set (``INFO_SIGMA``, ``INFO_DELAY_S``, ``DEFAULT_THETA_TRUST``).
 The SUMO GUI is suppressed (``--sumo-binary sumo``) for headless batch execution.
 

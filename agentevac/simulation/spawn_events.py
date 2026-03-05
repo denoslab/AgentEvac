@@ -1,7 +1,7 @@
 """Vehicle spawn event definitions for the AgentEvac simulation.
 
 ``SPAWN_EVENTS`` is a list of tuples, each defining one agent vehicle to be inserted
-into the SUMO simulation.  The main loop (``Traci_GPT2.process_pending_departures``)
+into the SUMO simulation.  The main loop (``agentevac.simulation.main``)
 iterates this list each decision tick and spawns vehicles whose departure time
 has been reached.
 
@@ -16,7 +16,7 @@ Tuple format:
     - ``lane``         : SUMO departure lane specifier (e.g., ``"first"``).
     - ``pos``          : Departure position on the edge in metres.
     - ``speed``        : Departure speed (``"max"`` uses the lane speed limit).
-    - ``color``        : RGBA color constant defined in ``Traci_GPT2.py``
+    - ``color``        : RGBA color constant defined in ``agentevac/simulation/main.py``
                          (e.g., ``C_RED``, ``C_BLUE``).
 
 Active groups (veh1–veh5): 12 vehicles across 5 spawn locations; the baseline

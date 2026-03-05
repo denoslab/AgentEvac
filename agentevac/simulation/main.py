@@ -5,8 +5,8 @@ lifecycle, orchestrates the per-agent decision pipeline, handles LLM calls, logs
 events and metrics, and optionally serves a live web dashboard.
 
 **Quick-start:**
-    python Traci_GPT2.py --sumo-binary sumo-gui --scenario advice_guided
-    python Traci_GPT2.py --sumo-binary sumo --scenario no_notice --metrics on
+    python -m agentevac.simulation.main --sumo-binary sumo-gui --scenario advice_guided
+    python -m agentevac.simulation.main --sumo-binary sumo --scenario no_notice --metrics on
 
 **Key CLI flags:**
     --scenario         : Information regime: no_notice | alert_guided | advice_guided.
