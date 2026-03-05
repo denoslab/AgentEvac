@@ -4,7 +4,7 @@
 calibration study.  It chains three stages:
 
     1. **Experiment sweep** (``experiments.run_parameter_sweep``):
-       Spawns one headless ``Traci_GPT2.py`` subprocess per grid cell and collects
+       Spawns one headless ``agentevac.simulation.main`` subprocess per grid cell and collects
        the metrics JSON and replay JSONL for each case.
 
     2. **Calibration fit** (``calibration.fit_agent_parameters``):
@@ -102,7 +102,7 @@ def run_study(
 
     Args:
         reference_path: Path to the reference metrics JSON (target behaviour).
-        script_path: Path to ``Traci_GPT2.py``.
+        script_path: Path to ``agentevac/simulation/main.py``.
         python_executable: Python interpreter; defaults to ``sys.executable``.
         output_dir: Base directory for all study outputs.
         sumo_binary: SUMO binary name (``"sumo"`` for headless).

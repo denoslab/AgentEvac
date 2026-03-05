@@ -8,8 +8,7 @@ services:
     volumes:
       # Scenario files are not in the repo — place Repaired.sumocfg,
       # Repaired.rou.xml, and any .net.xml files in ./scenario/ on the host.
-      # They are mounted directly into /app/ to match the hardcoded paths in
-      # Traci_GPT2.py.
+      # They are mounted read-only and copied into /app/ by entrypoint.sh.
       - ./scenario:/app/scenario_src:ro
       - ./outputs:/app/outputs
     # Override CMD to pass additional flags, e.g.:

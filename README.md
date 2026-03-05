@@ -20,24 +20,24 @@ Wildfire evacuations in the wildland-urban interface (WUI) are high-risk and tim
 **Requirements:** Python 3.9+, [SUMO](https://sumo.dlr.de/docs/Installing/index.html), OpenAI API key.
 
 ```bash
-# Install Python dependencies
-pip install openai pydantic sumolib traci
+# Install the package and its dependencies
+pip install -e .
 
 # Set required environment variables
 export SUMO_HOME=/path/to/sumo
 export OPENAI_API_KEY=your_key_here
 
 # Run a simulation (interactive, with SUMO GUI)
-python Traci_GPT2.py --sumo-binary sumo-gui --scenario advice_guided --messaging on
+python -m agentevac.simulation.main --sumo-binary sumo-gui --scenario advice_guided --messaging on
 
 # Run headless with metrics collection
-python Traci_GPT2.py --sumo-binary sumo --scenario no_notice --metrics on
+python -m agentevac.simulation.main --sumo-binary sumo --scenario no_notice --metrics on
 
 # Record LLM decisions for deterministic replay
-python Traci_GPT2.py --run-mode record --scenario alert_guided
+python -m agentevac.simulation.main --run-mode record --scenario alert_guided
 
 # Replay a previous run (no API calls)
-python Traci_GPT2.py --run-mode replay --run-id 20260209_012156
+python -m agentevac.simulation.main --run-mode replay --run-id 20260209_012156
 ```
 
 **Scenarios:** `no_notice` | `alert_guided` | `advice_guided`
@@ -65,7 +65,7 @@ Run artifacts are written to `./outputs/` on the host.
 ## Parameter Sweep & Calibration
 
 ```bash
-python study_runner.py \
+agentevac-study \
   --reference reference_metrics.json \
   --sigma-values "20,40,60" \
   --delay-values "0,5" \

@@ -2,7 +2,7 @@
 
 This module defines the per-agent in-memory state that persists across decision rounds.
 All live agent states are stored in the global ``AGENT_STATES`` dict, which is keyed by
-vehicle ID.  The main simulation loop (``Traci_GPT2.py``) creates or retrieves state via
+vehicle ID.  The main simulation loop (``agentevac.simulation.main``) creates or retrieves state via
 ``ensure_agent_state()`` before running the belief-update and departure-decision pipeline.
 
 Psychological profile parameters stored in each agent's ``profile`` dict:
