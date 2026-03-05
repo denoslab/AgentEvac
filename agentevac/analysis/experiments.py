@@ -154,14 +154,14 @@ def _extract_events_path(stdout: str) -> Optional[str]:
 def run_experiment_case(
     case_cfg: Dict[str, Any],
     *,
-    script_path: str = "Traci_GPT2.py",
+    script_path: str = "agentevac/simulation/main.py",
     python_executable: Optional[str] = None,
     output_dir: str = "outputs/experiments",
     sumo_binary: str = "sumo",
     run_mode: str = "record",
     timeout_s: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Execute one parameter-grid case by spawning a ``Traci_GPT2.py`` subprocess.
+    """Execute one parameter-grid case by spawning a simulation subprocess.
 
     Constructs the CLI command and environment from ``case_cfg``, runs the process,
     captures stdout/stderr, and extracts the metrics and replay file paths from the
@@ -171,7 +171,7 @@ def run_experiment_case(
         case_cfg: Case configuration dict (from ``build_experiment_grid``), containing
             at minimum ``info_sigma``, ``info_delay_s``, ``theta_trust``, and
             ``scenario`` keys.
-        script_path: Path to the main simulation script.
+        script_path: Path to the main simulation script (relative to project root).
         python_executable: Python interpreter to use; defaults to ``sys.executable``.
         output_dir: Directory for output files.
         sumo_binary: SUMO binary name; use ``"sumo"`` for headless batch runs.
@@ -185,6 +185,9 @@ def run_experiment_case(
     """
     python_bin = python_executable or sys.executable
     script_file = Path(script_path).resolve()
+    # Run subprocess from the project root (three levels above this file:
+    # agentevac/analysis/experiments.py → agentevac/analysis → agentevac → root).
+    project_root = Path(__file__).parents[2]
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -228,7 +231,7 @@ def run_experiment_case(
     try:
         proc = subprocess.run(
             cmd,
-            cwd=str(script_file.parent),
+            cwd=str(project_root),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -270,7 +273,7 @@ def run_experiment_case(
 def run_parameter_sweep(
     grid: List[Dict[str, Any]],
     *,
-    script_path: str = "Traci_GPT2.py",
+    script_path: str = "agentevac/simulation/main.py",
     python_executable: Optional[str] = None,
     output_dir: str = "outputs/experiments",
     sumo_binary: str = "sumo",
@@ -385,7 +388,7 @@ def export_experiment_results(
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=True)
-    parser.add_argument("--script-path", default="Traci_GPT2.py")
+    parser.add_argument("--script-path", default="agentevac/simulation/main.py")
     parser.add_argument("--python-executable", default=sys.executable)
     parser.add_argument("--output-dir", default="outputs/experiments")
     parser.add_argument("--sumo-binary", default="sumo", help="Use 'sumo' for headless batch runs.")

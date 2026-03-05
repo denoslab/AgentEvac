@@ -53,35 +53,35 @@ from pathlib import Path
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, List, Tuple, Any, Optional
-from agent_state import (
+from agentevac.agents.agent_state import (
     ensure_agent_state,
     append_signal_history,
     append_social_history,
     append_decision_history,
 )
-from information_model import (
+from agentevac.agents.information_model import (
     sample_environment_signal,
     apply_signal_delay,
     build_social_signal,
 )
-from belief_model import update_agent_belief
-from departure_model import should_depart_now
-from routing_utility import annotate_menu_with_expected_utility
-from metrics import RunMetricsCollector
-from forecast_layer import (
+from agentevac.agents.belief_model import update_agent_belief
+from agentevac.agents.departure_model import should_depart_now
+from agentevac.agents.routing_utility import annotate_menu_with_expected_utility
+from agentevac.analysis.metrics import RunMetricsCollector
+from agentevac.utils.forecast_layer import (
     build_fire_forecast,
     estimate_edge_forecast_risk,
     summarize_route_forecast,
     render_forecast_briefing,
 )
-from scenarios import (
+from agentevac.agents.scenarios import (
     SCENARIO_CHOICES,
     load_scenario_config,
     apply_scenario_to_signals,
     filter_menu_for_scenario,
     scenario_prompt_suffix,
 )
-from replay import RouteReplay
+from agentevac.utils.replay import RouteReplay
 
 # ---- OpenAI (LLM control) ----
 from openai import OpenAI
@@ -110,7 +110,7 @@ from sumolib import geomhelper
 CONTROL_MODE = "destination"
 
 # Your SUMO net file used by the .sumocfg (needed for edge geometry)
-NET_FILE = "Repaired.rou.xml"  # <-- set to your *.net.xml
+NET_FILE = os.getenv("NET_FILE", "sumo/Repaired.rou.xml")  # override via NET_FILE env var
 
 # OpenAI model + decision cadence
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -1293,7 +1293,7 @@ spawned = set()
 # =========================
 Sumo_config = [
     SUMO_BINARY,
-    "-c", "Repaired.sumocfg",
+    "-c", os.getenv("SUMO_CFG", "sumo/Repaired.sumocfg"),
     "--step-length", "0.05",
     "--delay", "1000",
     "--lateral-resolution", "0.1",
@@ -1378,7 +1378,7 @@ print(
     f"[SCENARIO] mode={SCENARIO_CONFIG['mode']} title={SCENARIO_CONFIG['title']}"
 )
 print(
-    f"[SUMO] binary={SUMO_BINARY} config=Repaired.sumocfg"
+    f"[SUMO] binary={SUMO_BINARY} config={os.getenv('SUMO_CFG', 'sumo/Repaired.sumocfg')}"
 )
 
 # =========================
