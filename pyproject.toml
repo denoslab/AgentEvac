@@ -16,6 +16,17 @@ dependencies = [
     "traci",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+    "mypy",
+    "mkdocs",
+    "mkdocstrings[python]",
+    "mkdocs-material",
+    "build",
+]
+
 [project.scripts]
 # Calibration / sweep tools expose a proper main() and work as CLI scripts.
 agentevac-study = "agentevac.analysis.study_runner:main"
