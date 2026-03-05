@@ -9,15 +9,16 @@ ENV SUMO_HOME=/usr/share/sumo
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt pyproject.toml ./
+RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir -e .
 
-COPY *.py .
+COPY agentevac/ ./agentevac/
+COPY sumo/ ./sumo/
 COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
-# Scenario files (Repaired.sumocfg, *.net.xml, *.rou.xml) are not committed
-# to the repo and must be mounted at runtime — see docker-compose.yml.
+# External scenario files (lytton.net.xml, polygons.xml) are not committed
+# and must be mounted at runtime — see docker-compose.yml.
 # outputs/ is also expected to be a host-mounted volume.
 RUN mkdir -p outputs
 

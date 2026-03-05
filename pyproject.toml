@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentevac"
+version = "0.1.0"
+description = "Agent-based wildfire evacuation simulator using SUMO and LLM-driven agents"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+dependencies = [
+    "openai>=1.0",
+    "pydantic>=2.0",
+    "sumolib",
+    "traci",
+]
+
+[project.scripts]
+# Calibration / sweep tools expose a proper main() and work as CLI scripts.
+agentevac-study = "agentevac.analysis.study_runner:main"
+agentevac-sweep = "agentevac.analysis.experiments:main"
+# The simulation is run as a module script:
+#   python -m agentevac.simulation.main --sumo-binary sumo-gui --scenario advice_guided
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agentevac*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-v"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true

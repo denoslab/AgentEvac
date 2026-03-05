@@ -24,7 +24,7 @@ returns ``True``.  The function implements a three-clause OR rule:
 
 from typing import Any, Dict, Tuple
 
-from agent_state import AgentRuntimeState
+from agentevac.agents.agent_state import AgentRuntimeState
 
 
 def should_depart_now(

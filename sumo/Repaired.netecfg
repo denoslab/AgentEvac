@@ -7,9 +7,9 @@
 
     <input>
         <sumocfg-file value="Repaired.sumocfg"/>
-        <additional-files value="Lytton/Buildings/polygons.xml"/>
+        <additional-files value="../Lytton/Buildings/polygons.xml"/>
         <route-files value="Repaired.rou.xml"/>
-        <sumo-net-file value="Lytton/2022_Roadnetwork_Lytton/lytton.net.xml"/>
+        <sumo-net-file value="../Lytton/2022_Roadnetwork_Lytton/lytton.net.xml"/>
     </input>
 
     <processing>

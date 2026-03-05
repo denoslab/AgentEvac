@@ -29,8 +29,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from calibration import export_calibration_report, fit_agent_parameters, load_reference_scenario
-from experiments import build_experiment_grid, export_experiment_results, run_parameter_sweep
+from agentevac.analysis.calibration import export_calibration_report, fit_agent_parameters, load_reference_scenario
+from agentevac.analysis.experiments import build_experiment_grid, export_experiment_results, run_parameter_sweep
 
 
 def _parse_float_list(raw: str) -> List[float]:
@@ -81,7 +81,7 @@ def _timestamped_study_dir(base_dir: str) -> str:
 def run_study(
     *,
     reference_path: str,
-    script_path: str = "Traci_GPT2.py",
+    script_path: str = "agentevac/simulation/main.py",
     python_executable: Optional[str] = None,
     output_dir: str = "outputs/studies",
     sumo_binary: str = "sumo",
@@ -204,7 +204,7 @@ def run_study(
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--reference", required=True, help="Reference metrics JSON.")
-    parser.add_argument("--script-path", default="Traci_GPT2.py")
+    parser.add_argument("--script-path", default="agentevac/simulation/main.py")
     parser.add_argument("--python-executable", default=sys.executable)
     parser.add_argument("--output-dir", default="outputs/studies")
     parser.add_argument("--sumo-binary", default="sumo", help="Use 'sumo' for headless batch runs.")
