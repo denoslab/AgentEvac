@@ -1,0 +1,41 @@
+site_name: AgentEvac
+site_description: Agent-based wildfire evacuation simulator using SUMO and LLM-driven agents
+site_url: https://denoslab.github.io/AgentEvac/
+repo_url: https://github.com/denoslab/AgentEvac
+repo_name: denoslab/AgentEvac
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: true
+            docstring_style: google
+            show_root_heading: true
+
+nav:
+  - Overview: index.md
+  - API Reference:
+    - Agents:
+      - agent_state: api/agents/agent_state.md
+      - belief_model: api/agents/belief_model.md
+      - departure_model: api/agents/departure_model.md
+      - information_model: api/agents/information_model.md
+      - routing_utility: api/agents/routing_utility.md
+      - scenarios: api/agents/scenarios.md
+    - Analysis:
+      - metrics: api/analysis/metrics.md
+      - calibration: api/analysis/calibration.md
+      - experiments: api/analysis/experiments.md
+      - study_runner: api/analysis/study_runner.md
+    - Utils:
+      - forecast_layer: api/utils/forecast_layer.md
+      - replay: api/utils/replay.md

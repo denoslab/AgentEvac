@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package and dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Test (pytest)
+        run: pytest tests/
+
+      - name: Check for stale Traci_GPT2 references
+        run: |
+          if grep -r "Traci_GPT2" --include="*.py" --include="*.md" --exclude-dir=".github" .; then
+            echo "ERROR: stale Traci_GPT2 references found — run the post-refactor audit"
+            exit 1
+          fi
