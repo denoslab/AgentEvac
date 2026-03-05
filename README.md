@@ -4,6 +4,12 @@
 
 An agentic simulator for wildfire evacuations that couples SUMO traffic simulation with LLM-driven agents. Agents follow the Protective Action Decision Model (PADM), maintaining probabilistic beliefs about hazard states and making real-time departure, routing, and destination decisions under uncertainty.
 
+## TL;DR
+
+```bash
+pip install agentevac
+```
+
 ## Background
 
 Wildfire evacuations in the wildland-urban interface (WUI) are high-risk and time-critical. Existing simulations rely on behaviorally naive models that fail to capture dynamic human cognition — fear, trust in authorities, social influence, and evolving risk perception. This project uses LLM agents to encode psychologically grounded, communicative, and adaptive evacuation behavior, enabling rigorous testing of warning strategies and route policies before crises occur.
