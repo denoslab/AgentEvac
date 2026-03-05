@@ -29,7 +29,12 @@ Wildfire evacuations in the wildland-urban interface (WUI) are high-risk and tim
 **Requirements:** Python 3.11+, [SUMO](https://sumo.dlr.de/docs/Installing/index.html), OpenAI API key.
 
 ```bash
-# Install the package and its dependencies
+# Install from PyPI
+pip install agentevac
+
+# Or install in development mode from source
+git clone https://github.com/denoslab/AgentEvac.git
+cd AgentEvac
 pip install -e .
 
 # Set required environment variables
