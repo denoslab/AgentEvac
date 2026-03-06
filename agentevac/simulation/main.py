@@ -68,6 +68,7 @@ from agentevac.agents.belief_model import update_agent_belief
 from agentevac.agents.departure_model import should_depart_now
 from agentevac.agents.routing_utility import annotate_menu_with_expected_utility
 from agentevac.analysis.metrics import RunMetricsCollector
+from agentevac.simulation.spawn_events import SPAWN_EVENTS
 from agentevac.utils.forecast_layer import (
     build_fire_forecast,
     estimate_edge_forecast_risk,
@@ -118,13 +119,34 @@ DECISION_PERIOD_S = float(os.getenv("DECISION_PERIOD_S", "5.0"))  # LLM may chan
 
 # Preset routes (Situation 1) - only needed if CONTROL_MODE="route"
 ROUTE_LIBRARY = [
-    # {"name": "route_0", "edges": ["edgeA", "edgeB", "edgeC"]},
+    {"name": "route_0", "edges": ["-479435809#1",
+                                  "-479435809#0",
+                                  "-479435812#0",
+                                  "-479435806",
+                                  "-30689314#10",
+                                  "-30689314#9",
+                                  "-30689314#8",
+                                  "-30689314#7",
+                                  "-30689314#6",
+                                  "-30689314#5",
+                                  "-30689314#4",
+                                  "-30689314#1",
+                                  "-30689314#0",
+                                  "-479505716#1",
+                                  "-479505717",
+                                  "-479505352",
+                                  "-479505354#2",
+                                  "-479505354#1",
+                                  "-479505354#0",
+                                  "-42047741#0",
+                                  "E#S1"
+                                  ]},
 ]
 
 # Preset destinations (Situation 2)
 DESTINATION_LIBRARY = [
     {"name": "shelter_0", "edge": "-42006543#0"},
-    {"name": "shelter_1", "edge": "-42047741#0"},
+    {"name": "shelter_1", "edge": "E#S1"},
     {"name": "shelter_2", "edge": "42044784#5"},
 ]
 
@@ -1036,266 +1058,6 @@ class AgentOverlayManager:
             self._poi_by_vehicle.pop(vid, None)
             self._last_label.pop(vid, None)
 
-C_RED = (255, 0, 0, 255)    # Red, Green, Blue, Alpha
-C_ORANGE = (255, 125, 0, 255)
-C_YELLOW = (255, 255, 0, 255)
-C_SPRING = (125, 255, 0, 255)
-C_GREEN = (0, 255, 0, 255)
-C_CYAN = (0, 255, 255, 255)
-C_OCEAN = (0, 125, 255, 255)
-C_BLUE = (0, 0, 255, 255)
-C_VIOLET = (125, 0, 255, 255)
-C_MAGENTA = (255, 0, 255, 255)
-# ---- Scenario spawn events (time in seconds) ----
-SPAWN_EVENTS = [
-    # vehicle id, spawn edge, dest edge (initial), depart time, lane, pos, speed, (color)
-    ("veh1_1", "42006672", "-42047741#0", 0.0, "first", "10", "max", C_RED),
-    ("veh1_2", "42006672", "-42047741#0", 5.0, "first", "10", "max", C_BLUE),
-    ("veh1_3", "42006672", "-42047741#0", 10.0, "first", "10", "max", C_GREEN),
-
-    ("veh2_1", "42006514#4", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    ("veh2_2", "42006514#4", "-42047741#0", 5.0, "first", "20", "max", C_BLUE),
-
-    ("veh3_1", "-42006515", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    ("veh3_2", "-42006515", "-42047741#0", 5.0, "first", "20", "max", C_BLUE),
-
-    ("veh4_1", "42006515", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    ("veh4_2", "42006515", "-42047741#0", 5.0, "first", "20", "max", C_BLUE),
-
-    ("veh5_1", "42006565", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    ("veh5_2", "42006565", "-42047741#0", 5.0, "first", "20", "max", C_BLUE),
-
-    # ("veh6_1", "-42006513#0", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh6_2", "-42006513#0", "-42047741#0", 5.0, "first", "20", "max", C_BLUE),
-    # ("veh6_3", "-42006513#0", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh6_4", "-42006513#0", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh6_5", "-42006513#0", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    #
-    # ("veh7_1", "42006504#1", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh7_2", "42006504#1", "-42047741#0", 5.0, "first", "20", "max", C_BLUE),
-    # ("veh7_3", "42006504#1", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    #
-    # ("veh8_1", "42006513#0", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh8_2", "42006513#0", "-42047741#0", 5.0, "first", "20", "max", C_BLUE),
-    # ("veh8_3", "42006513#0", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh8_4", "42006513#0", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh8_5", "42006513#0", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    #
-    # ("veh9_1", "-42006719#1", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh9_2", "-42006719#1", "-42047741#0", 5.0, "first", "20", "max", C_BLUE),
-    # ("veh9_3", "-42006719#1", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh9_4", "-42006719#1", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh9_5", "-42006719#1", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    # ("veh9_6", "-42006719#1", "-42047741#0", 25.0, "first", "20", "max", C_CYAN),
-    # ("veh9_7", "-42006719#1", "-42047741#0", 30.0, "first", "20", "max", C_YELLOW),
-    #
-    # ("veh10_1", "42006513#1", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh10_2", "42006513#1", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh10_3", "42006513#1", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh10_4", "42006513#1", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh10_5", "42006513#1", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    # ("veh10_6", "42006513#1", "-42047741#0", 25.0, "first", "20", "max", C_CYAN),
-    #
-    # ("veh11_1", "-42006513#2", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh11_2", "-42006513#2", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh11_3", "-42006513#2", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh11_4", "-42006513#2", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh11_5", "-42006513#2", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    # ("veh11_6", "-42006513#2", "-42047741#0", 25.0, "first", "20", "max", C_CYAN),
-    # ("veh11_7", "-42006513#2", "-42047741#0", 30.0, "first", "20", "max", C_OCEAN),
-    # ("veh11_8", "-42006513#2", "-42047741#0", 35.0, "first", "20", "max", C_VIOLET),
-    # ("veh11_9", "-42006513#2", "-42047741#0", 40.0, "first", "20", "max", C_MAGENTA),
-    #
-    # ("veh12_1", "30689314#5", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh12_2", "30689314#5", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh12_3", "30689314#5", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh12_4", "30689314#5", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    #
-    # ("veh13_1", "-30689314#5", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh13_2", "-30689314#5", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh13_3", "-30689314#5", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh13_4", "-30689314#5", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh13_5", "-30689314#5", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    # ("veh13_6", "-30689314#5", "-42047741#0", 25.0, "first", "20", "max", C_CYAN),
-    #
-    # ("veh14_1", "42006513#2", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh14_2", "42006513#2", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh14_3", "42006513#2", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh14_4", "42006513#2", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh14_5", "42006513#2", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    # ("veh14_6", "42006513#2", "-42047741#0", 25.0, "first", "20", "max", C_CYAN),
-    # ("veh14_7", "42006513#2", "-42047741#0", 30.0, "first", "20", "max", C_OCEAN),
-    # ("veh14_8", "42006513#2", "-42047741#0", 35.0, "first", "20", "max", C_VIOLET),
-    # ("veh14_9", "42006513#2", "-42047741#0", 40.0, "first", "20", "max", C_MAGENTA),
-    #
-    # ("veh15_1", "-30689314#4", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh15_2", "-30689314#4", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh15_3", "-30689314#4", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh15_4", "-30689314#4", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh15_5", "-30689314#4", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    # ("veh15_6", "-30689314#4", "-42047741#0", 25.0, "first", "20", "max", C_CYAN),
-    # ("veh15_7", "-30689314#4", "-42047741#0", 30.0, "first", "20", "max", C_OCEAN),
-    #
-    # ("veh16_1", "-42006513#3", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh16_2", "-42006513#3", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh16_3", "-42006513#3", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh16_4", "-42006513#3", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh16_5", "-42006513#3", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    #
-    # ("veh17_1", "42006513#3", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh17_2", "42006513#3", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh17_3", "42006513#3", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    #
-    # ("veh18_1", "42006734#0", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh18_2", "42006734#0", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh18_3", "42006734#0", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh18_4", "42006734#0", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh18_5", "42006734#0", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    # ("veh18_6", "42006734#0", "-42047741#0", 25.0, "first", "20", "max", C_CYAN),
-    # ("veh18_7", "42006734#0", "-42047741#0", 30.0, "first", "20", "max", C_OCEAN),
-    # ("veh18_8", "42006734#0", "-42047741#0", 35.0, "first", "20", "max", C_VIOLET),
-    #
-    # ("veh19_1", "-42006513#4", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh19_2", "-42006513#4", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh19_3", "-42006513#4", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    #
-    # ("veh20_1", "42006513#4", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh20_2", "42006513#4", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    #
-    # ("veh21_1", "30689314#0", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh21_2", "30689314#0", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh21_3", "30689314#0", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh21_4", "30689314#0", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    #
-    # ("veh22_1", "-30689314#0", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh22_2", "-30689314#0", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh22_3", "-30689314#0", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh22_4", "-30689314#0", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    #
-    # ("veh23_1", "42006734#1", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh23_2", "42006734#1", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh23_3", "42006734#1", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh23_4", "42006734#1", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    #
-    # ("veh24_1", "42006713#1", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh24_2", "42006713#1", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh24_3", "42006713#1", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    #
-    # ("veh25_1", "42006701#0", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh25_2", "42006701#0", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh25_3", "42006701#0", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh25_4", "42006701#0", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh25_5", "42006701#0", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    #
-    # ("veh26_1", "479505716#1", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh26_2", "479505716#1", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh26_3", "479505716#1", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh26_4", "479505716#1", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    #
-    # ("veh27_1", "-479505716#1", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh27_2", "-479505716#1", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh27_3", "-479505716#1", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh27_4", "-479505716#1", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    #
-    # ("veh28_1", "42006734#2", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh28_2", "42006734#2", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh28_3", "42006734#2", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    #
-    # ("veh29_1", "42006734#2", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh29_2", "42006734#2", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    #
-    # ("veh30_1", "-42006522#1", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh30_2", "-42006522#1", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh30_3", "-42006522#1", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    #
-    # ("veh31_1", "42006522#1", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh31_2", "42006522#1", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    #
-    # ("veh32_1", "42006636#0", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh32_2", "42006636#0", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh32_3", "42006636#0", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh32_4", "42006636#0", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh32_5", "42006636#0", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    #
-    # ("veh33_1", "-966804140", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh33_2", "-966804140", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh33_3", "-966804140", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    #
-    # ("veh34_1", "42006708", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh34_2", "42006708", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh34_3", "42006708", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    #
-    # ("veh35_1", "479505354#2", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh35_2", "479505354#2", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh35_3", "479505354#2", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    #
-    # ("veh36_1", "-42006660", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh36_2", "-42006660", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh36_3", "-42006660", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh36_4", "-42006660", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh36_5", "-42006660", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    #
-    # ("veh37_1", "42006589", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh37_2", "42006589", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh37_3", "42006589", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    #
-    # ("veh38_1", "42006572", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh38_2", "42006572", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    #
-    # ("veh39_1", "42006733", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh39_2", "42006733", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh39_3", "42006733", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    #
-    # ("veh40_1", "42006506", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh40_2", "42006506", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh40_3", "42006506", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh40_4", "42006506", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh40_5", "42006506", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    #
-    # ("veh41_1", "-42006549#1", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh41_2", "-42006549#1", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh41_3", "-42006549#1", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh41_4", "-42006549#1", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh41_5", "-42006549#1", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    # ("veh41_6", "-42006549#1", "-42047741#0", 25.0, "first", "20", "max", C_CYAN),
-    # ("veh41_7", "-42006549#1", "-42047741#0", 30.0, "first", "20", "max", C_OCEAN),
-    # ("veh41_8", "-42006549#1", "-42047741#0", 35.0, "first", "20", "max", C_VIOLET),
-    #
-    # ("veh42_1", "-42006552#1", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh42_2", "-42006552#1", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh42_3", "-42006552#1", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh42_4", "-42006552#1", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh42_5", "-42006552#1", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    #
-    # ("veh43_1", "42006552#0", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh43_2", "42006552#0", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh43_3", "42006552#0", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh43_4", "42006552#0", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh43_5", "42006552#0", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    #
-    # ("veh44_1", "-42006552#0", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh44_2", "-42006552#0", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh44_3", "-42006552#0", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh44_4", "-42006552#0", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh44_5", "-42006552#0", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    #
-    # ("veh45_1", "-42006706#0", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh45_2", "-42006706#0", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh45_3", "-42006706#0", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh45_4", "-42006706#0", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh45_5", "-42006706#0", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    #
-    # ("veh46_1", "42006706#1", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh46_2", "42006706#1", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-    # ("veh46_3", "42006706#1", "-42047741#0", 10.0, "first", "20", "max", C_GREEN),
-    # ("veh46_4", "42006706#1", "-42047741#0", 15.0, "first", "20", "max", C_ORANGE),
-    # ("veh46_5", "42006706#1", "-42047741#0", 20.0, "first", "20", "max", C_SPRING),
-    # ("veh46_6", "42006706#1", "-42047741#0", 25.0, "first", "20", "max", C_CYAN),
-    # ("veh46_7", "42006706#1", "-42047741#0", 30.0, "first", "20", "max", C_OCEAN),
-    #
-    # ("veh47_1", "42006592", "-42047741#0", 0.0, "first", "20", "max", C_RED),
-    # ("veh47_2", "42006592", "-42047741#0", 5.0, "first", "20", "max", C_YELLOW),
-]
 spawned = set()
 
 
@@ -1334,6 +1096,9 @@ overlays = AgentOverlayManager(
     id_label_max=OVERLAY_ID_LABEL_MAX,
 )
 print(f"[REPLAY] mode={RUN_MODE} path={replay.path}")
+if RUN_MODE == "replay":
+    departure_source = "recorded_departure_events" if replay.has_departure_schedule() else "spawn_events_fallback"
+    print(f"[REPLAY_DEPARTURES] source={departure_source}")
 if replay.dialog_path:
     print(f"[DIALOG] path={replay.dialog_path}")
 if replay.dialog_csv_path:
@@ -1887,15 +1652,20 @@ def process_pending_departures(step_idx: int):
     on decision ticks (multiples of ``decision_period_steps``); all other steps return
     immediately after checking whether any vehicle's scheduled depart time has passed.
 
-    For each not-yet-spawned vehicle whose depart time has been reached:
+    In record mode, all spawn events become eligible from simulation time 0 so the
+    actual release time is governed by the departure model rather than the static
+    ``t0`` values in ``SPAWN_EVENTS``.
+
+    For each not-yet-spawned vehicle whose release gate has been reached:
         1. Samples a noisy/delayed environment signal for the spawn edge.
         2. Builds a social signal (empty inbox for pre-departure agents).
         3. Updates the Bayesian belief distribution.
         4. Evaluates the three-clause departure decision rule.
         5. If departing, adds the vehicle to the SUMO simulation via TraCI.
 
-    In replay mode, vehicles are added immediately when their depart time is reached
-    without running the departure decision logic.
+    In replay mode, vehicles are added when the recorded ``departure_release`` event
+    for that vehicle is encountered.  If the replay log predates departure-event
+    logging, the function falls back to the static ``SPAWN_EVENTS`` schedule.
 
     Args:
         step_idx: The current SUMO simulation step index.
@@ -1922,12 +1692,19 @@ def process_pending_departures(step_idx: int):
     for (vid, from_edge, to_edge, t0, dLane, dPos, dSpeed, dColor) in SPAWN_EVENTS:
         if vid in spawned:
             continue
-        if sim_t < t0:
-            continue
 
         if RUN_MODE == "replay":
-            should_release = True
-            release_reason = "replay_schedule"
+            departure_rec = replay.departure_record_for_step(step_idx, vid)
+            if departure_rec is not None:
+                should_release = True
+                release_reason = str(departure_rec.get("reason") or "replay_recorded_departure")
+            else:
+                if replay.has_departure_schedule():
+                    continue
+                if sim_t < t0:
+                    continue
+                should_release = True
+                release_reason = "replay_schedule_fallback"
             agent_state = ensure_agent_state(
                 vid,
                 sim_t,
@@ -1939,6 +1716,9 @@ def process_pending_departures(step_idx: int):
                 default_lambda_t=DEFAULT_LAMBDA_T,
             )
         else:
+            effective_t0 = 0.0
+            if sim_t < effective_t0:
+                continue
             if not evaluate_departures:
                 continue
 
@@ -2106,6 +1886,14 @@ def process_pending_departures(step_idx: int):
             traci.vehicle.setColor(vid, dColor)
             spawned.add(vid)
             agent_state.has_departed = True
+            replay.record_departure_release(
+                step=step_idx,
+                sim_t_s=sim_t,
+                veh_id=vid,
+                from_edge=from_edge,
+                to_edge=to_edge,
+                reason=release_reason,
+            )
             metrics.record_departure(vid, sim_t, release_reason)
             print(f"[DEPART] {vid}: released from {from_edge} via {release_reason}")
             if EVENTS_ENABLED:

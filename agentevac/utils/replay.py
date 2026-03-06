@@ -1,11 +1,13 @@
-"""Record and replay LLM-driven route decisions for deterministic re-runs.
+"""Record and replay LLM-driven actions for deterministic re-runs.
 
 This module provides ``RouteReplay``, a class that operates in one of two modes:
 
-**record** — During a live simulation run, every LLM-applied route change is logged
+**record** — During a live simulation run, every replay-relevant action is logged
     to a JSONL file (one JSON record per line) along with agent cognition snapshots
-    and LLM dialog transcripts.  Only ``route_change`` events are used for replay;
-    cognition and dialog events are write-only metadata for research/debugging.
+    and LLM dialog transcripts.  Replay currently consumes:
+        - ``departure_release`` events for vehicle release timing
+        - ``route_change`` events for route application
+    Cognition and dialog events are write-only metadata for research/debugging.
 
     Three output files are created:
         - ``routes_<run_id>.jsonl``         — Replayable route-change schedule.
@@ -13,6 +15,7 @@ This module provides ``RouteReplay``, a class that operates in one of two modes:
         - ``routes_<run_id>.dialogs.csv``   — Machine-readable LLM dialog table.
 
 **replay** — Loads a previously recorded JSONL file and, on each simulation step,
+    releases vehicles according to the recorded ``departure_release`` schedule and
     applies the scheduled ``route_change`` events to the matching vehicle via
     ``traci.vehicle.setRoute()``.  This allows exact behavioural reproduction without
     making any OpenAI API calls.
@@ -46,7 +49,8 @@ class RouteReplay:
         self._dialog_fh = None
         self._dialog_csv_fh = None
         self._dialog_csv_writer = None
-        self._schedule = {}  # step_idx -> veh_id -> record
+        self._schedule = {}  # step_idx -> veh_id -> route_change record
+        self._departure_schedule = {}  # step_idx -> veh_id -> departure_release record
 
         if self.mode == "record":
             self.path = self._build_record_path(path)
@@ -75,7 +79,7 @@ class RouteReplay:
             self._dialog_csv_writer.writeheader()
             self._dialog_csv_fh.flush()
         elif self.mode == "replay":
-            self._schedule = self._load_schedule(self.path)
+            self._schedule, self._departure_schedule = self._load_schedule(self.path)
         else:
             raise ValueError(f"Unknown RUN_MODE={mode}. Use 'record' or 'replay'.")
 
@@ -108,32 +112,35 @@ class RouteReplay:
 
     @staticmethod
     def _load_schedule(path: str):
-        """Load and index ``route_change`` events from a JSONL file by step index.
+        """Load replayable events from a JSONL file by step index.
 
-        Non-``route_change`` events (cognition, metrics snapshots, dialogs) are
-        silently ignored so replay only reproduces the route-assignment actions.
+        Replay currently consumes ``route_change`` and ``departure_release`` events.
+        All other events (cognition, metrics snapshots, dialogs) are silently ignored.
 
         Args:
             path: Path to the recorded JSONL file.
 
         Returns:
-            Dict mapping ``step_idx`` → {``veh_id`` → record dict}.
+            Tuple of dicts:
+                - ``route_schedule``: ``step_idx`` → {``veh_id`` → route-change record}
+                - ``departure_schedule``: ``step_idx`` → {``veh_id`` → departure record}
         """
-        schedule = {}
+        route_schedule = {}
+        departure_schedule = {}
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
                 rec = json.loads(line)
-                # Only route-change events are replayable actions.
                 event = rec.get("event", "route_change")
-                if event != "route_change":
-                    continue
                 step = int(rec["step"])
                 vid = rec["veh_id"]
-                schedule.setdefault(step, {})[vid] = rec
-        return schedule
+                if event == "route_change":
+                    route_schedule.setdefault(step, {})[vid] = rec
+                elif event == "departure_release":
+                    departure_schedule.setdefault(step, {})[vid] = rec
+        return route_schedule, departure_schedule
 
     @staticmethod
     def _build_record_path(base_path: str) -> str:
@@ -239,6 +246,39 @@ class RouteReplay:
         }
         self._write_jsonl(rec)
 
+    def record_departure_release(
+        self,
+        step: int,
+        sim_t_s: float,
+        veh_id: str,
+        from_edge: str,
+        to_edge: str,
+        reason: Optional[str] = None,
+    ):
+        """Log one vehicle release event to the JSONL file.
+
+        This is replayable metadata used to reproduce the actual departure timing of
+        each vehicle in replay mode.
+
+        Args:
+            step: SUMO simulation step index.
+            sim_t_s: Simulation time in seconds.
+            veh_id: Vehicle ID.
+            from_edge: Spawn edge used to initialize the route.
+            to_edge: Initial destination edge used to initialize the route.
+            reason: Optional departure reason.
+        """
+        rec = {
+            "event": "departure_release",
+            "step": int(step),
+            "time_s": float(sim_t_s),
+            "veh_id": str(veh_id),
+            "from_edge": str(from_edge),
+            "to_edge": str(to_edge),
+            "reason": reason,
+        }
+        self._write_jsonl(rec)
+
     def record_agent_cognition(
         self,
         step: int,
@@ -270,6 +310,16 @@ class RouteReplay:
             "context": dict(context or {}),
         }
         self._write_jsonl(rec)
+
+    def departure_record_for_step(self, step: int, veh_id: str) -> Optional[Dict[str, Any]]:
+        """Return the recorded departure-release event for one vehicle at one step."""
+        if self.mode != "replay":
+            return None
+        return self._departure_schedule.get(int(step), {}).get(str(veh_id))
+
+    def has_departure_schedule(self) -> bool:
+        """Whether the loaded replay log contains explicit departure-release events."""
+        return bool(self._departure_schedule)
 
     def record_metric_snapshot(
         self,
