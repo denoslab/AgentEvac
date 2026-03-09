@@ -53,12 +53,15 @@ from pathlib import Path
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, List, Tuple, Any, Optional
+from urllib.parse import urlparse, unquote
 from agentevac.agents.agent_state import (
+    AGENT_STATES,
     ensure_agent_state,
     append_signal_history,
     append_social_history,
     append_decision_history,
     append_observation_history,
+    snapshot_agent_state,
 )
 from agentevac.agents.information_model import (
     sample_environment_signal,
@@ -633,7 +636,7 @@ class WebDashboard:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Agent Chat Dashboard</title>
+  <title>AgentEvac Live Dashboard</title>
   <style>
     :root {
       --bg: #f4f1e8;
@@ -666,7 +669,7 @@ class WebDashboard:
     #status { color: var(--muted); font-size: 12px; }
     main {
       display: grid;
-      grid-template-columns: 360px 1fr;
+      grid-template-columns: 280px minmax(320px, 1fr) 460px;
       gap: 10px;
       padding: 10px;
       min-height: 0;
@@ -687,7 +690,7 @@ class WebDashboard:
       color: var(--accent);
       letter-spacing: .2px;
     }
-    .list, .feed { overflow: auto; padding: 8px; min-height: 0; }
+    .list, .feed, .detail { overflow: auto; padding: 8px; min-height: 0; }
     .msg {
       border: 1px solid var(--line);
       border-left: 4px solid #b3622f;
@@ -705,32 +708,112 @@ class WebDashboard:
       color: var(--ink);
     }
     .evt:last-child { border-bottom: none; }
+    .agent-row {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      margin-bottom: 8px;
+      background: #fffefb;
+      cursor: pointer;
+    }
+    .agent-row.active {
+      border-color: var(--accent);
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
+    .agent-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .agent-sub {
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.35;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: #ede1d1;
+      color: var(--ink);
+      font-size: 10px;
+    }
+    .detail-section {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      margin-bottom: 8px;
+      background: #fffefb;
+    }
+    .detail-section h3 {
+      margin: 0 0 6px 0;
+      font-size: 12px;
+      color: var(--accent);
+    }
+    .kv { font-size: 12px; line-height: 1.45; white-space: pre-wrap; }
+    .json {
+      margin: 0;
+      font-size: 11px;
+      line-height: 1.35;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .evt button {
+      margin-left: 6px;
+      font-size: 11px;
+      border: 1px solid var(--line);
+      background: #fffaf0;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    @media (max-width: 1200px) {
+      main { grid-template-columns: 260px 1fr; }
+      #detail-panel { grid-column: 1 / -1; }
+    }
   </style>
 </head>
 <body>
   <header>
-    <h1>Agent Chat Pane</h1>
+    <h1>AgentEvac Live Dashboard</h1>
     <div id="status">connecting...</div>
   </header>
   <main>
     <section class="panel">
-      <h2>Messages</h2>
-      <div id="msgs" class="list"></div>
+      <h2>Agents</h2>
+      <div id="agents" class="list"></div>
     </section>
     <section class="panel">
-      <h2>Live Events</h2>
+      <h2>Messages / Events</h2>
+      <div id="msgs" class="list"></div>
       <div id="events" class="feed"></div>
+    </section>
+    <section class="panel" id="detail-panel">
+      <h2>Agent Memory</h2>
+      <div id="detail" class="detail"></div>
     </section>
   </main>
   <script>
     const statusEl = document.getElementById("status");
+    const agentsEl = document.getElementById("agents");
     const msgsEl = document.getElementById("msgs");
     const eventsEl = document.getElementById("events");
+    const detailEl = document.getElementById("detail");
     const MAX_ROWS = 300;
-    function addEvent(text) {
+    let selectedAgentId = null;
+    let latestAgents = [];
+    function addEvent(text, vehId) {
       const row = document.createElement("div");
       row.className = "evt";
       row.textContent = text;
+      if (vehId) {
+        const btn = document.createElement("button");
+        btn.textContent = vehId;
+        btn.onclick = () => selectAgent(vehId);
+        row.appendChild(btn);
+      }
       eventsEl.prepend(row);
       while (eventsEl.children.length > MAX_ROWS) eventsEl.removeChild(eventsEl.lastChild);
     }
@@ -748,6 +831,105 @@ class WebDashboard:
       msgsEl.prepend(box);
       while (msgsEl.children.length > MAX_ROWS) msgsEl.removeChild(msgsEl.lastChild);
     }
+    function selectAgent(agentId) {
+      selectedAgentId = agentId;
+      renderAgents(latestAgents);
+      refreshAgentDetail();
+    }
+    function renderAgents(items) {
+      latestAgents = items || [];
+      agentsEl.innerHTML = "";
+      for (const item of latestAgents) {
+        const row = document.createElement("div");
+        row.className = "agent-row" + (item.agent_id === selectedAgentId ? " active" : "");
+        row.onclick = () => selectAgent(item.agent_id);
+        const danger = item.p_danger == null ? "?" : item.p_danger.toFixed(2);
+        const confidence = item.confidence == null ? "?" : item.confidence.toFixed(2);
+        row.innerHTML = `
+          <div class="agent-title">
+            <span>${item.agent_id}</span>
+            <span class="badge">${item.active ? "active" : (item.has_departed ? "departed" : "waiting")}</span>
+          </div>
+          <div class="agent-sub">
+            edge: ${item.current_edge || "-"}<br>
+            p_danger: ${danger} | confidence: ${confidence}<br>
+            last_action: ${item.last_action_status || "-"}
+          </div>
+        `;
+        agentsEl.appendChild(row);
+      }
+      if (!selectedAgentId && latestAgents.length > 0) {
+        selectedAgentId = latestAgents[0].agent_id;
+        renderAgents(latestAgents);
+      }
+    }
+    function renderJsonSection(title, value) {
+      const box = document.createElement("section");
+      box.className = "detail-section";
+      const h = document.createElement("h3");
+      h.textContent = title;
+      const pre = document.createElement("pre");
+      pre.className = "json";
+      pre.textContent = JSON.stringify(value, null, 2);
+      box.appendChild(h);
+      box.appendChild(pre);
+      return box;
+    }
+    function renderAgentDetail(snapshot) {
+      detailEl.innerHTML = "";
+      if (!snapshot) {
+        detailEl.textContent = "Select an agent.";
+        return;
+      }
+      const summary = document.createElement("section");
+      summary.className = "detail-section";
+      summary.innerHTML = `
+        <h3>Summary</h3>
+        <div class="kv">
+agent_id: ${snapshot.agent_id}
+mode: ${snapshot.mode}
+active: ${snapshot.current.active}
+has_departed: ${snapshot.current.has_departed}
+current_edge: ${snapshot.current.current_edge || "-"}
+pos_xy: ${JSON.stringify(snapshot.current.pos_xy)}
+last_action_status: ${snapshot.latest.last_action_status || "-"}
+last_reason: ${snapshot.latest.last_reason || "-"}
+        </div>
+      `;
+      detailEl.appendChild(summary);
+      detailEl.appendChild(renderJsonSection("Belief", snapshot.belief));
+      detailEl.appendChild(renderJsonSection("Psychology", snapshot.psychology));
+      detailEl.appendChild(renderJsonSection("Current", snapshot.current));
+      detailEl.appendChild(renderJsonSection("Inbox", snapshot.inbox));
+      detailEl.appendChild(renderJsonSection("System Observations", snapshot.system_observation_updates));
+      detailEl.appendChild(renderJsonSection("Histories", snapshot.histories));
+    }
+    async function refreshAgents() {
+      try {
+        const res = await fetch("/api/agents");
+        const payload = await res.json();
+        renderAgents(payload.agents || []);
+      } catch (err) {
+        // ignore; SSE status already indicates connectivity
+      }
+    }
+    async function refreshAgentDetail() {
+      if (!selectedAgentId) {
+        renderAgentDetail(null);
+        return;
+      }
+      try {
+        const res = await fetch(`/api/agent/${encodeURIComponent(selectedAgentId)}`);
+        if (res.status === 404) {
+          renderAgentDetail(null);
+          return;
+        }
+        const payload = await res.json();
+        renderAgentDetail(payload);
+      } catch (err) {
+        // ignore transient fetch failures
+      }
+    }
     const es = new EventSource("/events");
     es.onopen = () => { statusEl.textContent = "connected"; };
     es.onerror = () => { statusEl.textContent = "reconnecting..."; };
@@ -760,8 +942,12 @@ class WebDashboard:
       }
       const base = `[${rec.wall_time || ""}] ${kind}`;
       const more = rec.summary ? ` | ${rec.summary}` : "";
-      addEvent(base + more);
+      addEvent(base + more, rec.veh_id || rec.to_id || rec.from_id || null);
     };
+    refreshAgents();
+    refreshAgentDetail();
+    setInterval(refreshAgents, 1500);
+    setInterval(refreshAgentDetail, 1500);
   </script>
 </body>
 </html>
@@ -791,8 +977,18 @@ class WebDashboard:
             def log_message(self, format, *args):
                 return
 
+            def _send_json(self, payload: Dict[str, Any], status: int = 200):
+                data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
             def do_GET(self):
-                if self.path == "/":
+                parsed = urlparse(self.path)
+
+                if parsed.path == "/":
                     payload = dashboard.HTML.encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -801,7 +997,20 @@ class WebDashboard:
                     self.wfile.write(payload)
                     return
 
-                if self.path == "/events":
+                if parsed.path == "/api/agents":
+                    self._send_json({"agents": build_dashboard_agent_index()})
+                    return
+
+                if parsed.path.startswith("/api/agent/"):
+                    agent_id = unquote(parsed.path[len("/api/agent/"):]).strip()
+                    snapshot = build_agent_dashboard_snapshot(agent_id)
+                    if snapshot is None:
+                        self._send_json({"error": "agent_not_found", "agent_id": agent_id}, status=404)
+                    else:
+                        self._send_json(snapshot)
+                    return
+
+                if parsed.path == "/events":
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
                     self.send_header("Cache-Control", "no-cache")
@@ -1215,6 +1424,7 @@ client = OpenAI()  # uses OPENAI_API_KEY
 veh_last_choice: Dict[str, int] = {}
 decision_round_counter = 0
 agent_round_history: Dict[str, deque] = {}
+agent_live_status: Dict[str, Dict[str, Any]] = {}
 
 # Load net + cache one lane-shape per edge for distance checks
 try:
@@ -1657,6 +1867,128 @@ def _append_agent_history(agent_id: str, rec: Dict[str, Any]):
         hist = deque(maxlen=AGENT_HISTORY_ROUNDS)
         agent_round_history[agent_id] = hist
     hist.append(rec)
+
+
+def _update_agent_live_status(
+    agent_id: str,
+    *,
+    sim_t_s: float,
+    active: bool,
+    current_edge: Optional[str] = None,
+    pos_xy: Optional[List[float]] = None,
+    route_head: Optional[List[str]] = None,
+) -> None:
+    status = agent_live_status.get(agent_id, {})
+    status.update({
+        "agent_id": str(agent_id),
+        "active": bool(active),
+        "current_edge": current_edge,
+        "pos_xy": pos_xy,
+        "route_head": list(route_head or []),
+        "last_seen_sim_t_s": _round_or_none(sim_t_s, 2),
+    })
+    agent_live_status[agent_id] = status
+
+
+def _refresh_active_agent_live_status(sim_t_s: float, active_vehicle_ids: List[str]) -> None:
+    active_set = set(active_vehicle_ids)
+    for agent_id in list(agent_live_status.keys()):
+        if agent_id not in active_set:
+            agent_live_status[agent_id]["active"] = False
+    for agent_id in active_vehicle_ids:
+        try:
+            roadid = traci.vehicle.getRoadID(agent_id)
+            pos = traci.vehicle.getPosition(agent_id)
+            route_head = list(traci.vehicle.getRoute(agent_id))[:AGENT_HISTORY_ROUTE_HEAD_EDGES]
+            _update_agent_live_status(
+                agent_id,
+                sim_t_s=sim_t_s,
+                active=True,
+                current_edge=roadid,
+                pos_xy=[round(pos[0], 2), round(pos[1], 2)],
+                route_head=route_head,
+            )
+        except traci.TraCIException:
+            continue
+
+
+def _safe_history_slice(items: Any, limit: int) -> List[Any]:
+    seq = list(items or [])
+    return seq[-max(1, int(limit)) :]
+
+
+def build_agent_dashboard_snapshot(agent_id: str) -> Optional[Dict[str, Any]]:
+    state = AGENT_STATES.get(agent_id)
+    live = dict(agent_live_status.get(agent_id, {}))
+    if state is None and not live and agent_id not in SPAWN_EDGE_BY_AGENT:
+        return None
+
+    state_snap = snapshot_agent_state(state) if state is not None else {
+        "profile": {},
+        "belief": {},
+        "psychology": {},
+        "signal_history": [],
+        "social_history": [],
+        "decision_history": [],
+        "observation_history": [],
+        "has_departed": bool(agent_id in spawned),
+    }
+    round_history = _safe_history_slice(agent_round_history.get(agent_id, []), 20)
+    decision_history = _safe_history_slice(state_snap.get("decision_history", []), 20)
+    latest = round_history[-1] if round_history else (decision_history[-1] if decision_history else {})
+
+    return {
+        "agent_id": str(agent_id),
+        "mode": RUN_MODE,
+        "current": {
+            "active": bool(live.get("active", False)),
+            "has_departed": bool(state_snap.get("has_departed", agent_id in spawned)),
+            "current_edge": live.get("current_edge"),
+            "pos_xy": live.get("pos_xy"),
+            "route_head": list(live.get("route_head", [])),
+            "last_seen_sim_t_s": live.get("last_seen_sim_t_s"),
+            "spawn_edge": SPAWN_EDGE_BY_AGENT.get(agent_id),
+        },
+        "profile": dict(state_snap.get("profile", {})),
+        "belief": dict(state_snap.get("belief", {})),
+        "psychology": dict(state_snap.get("psychology", {})),
+        "inbox": _safe_history_slice(messaging.get_inbox(agent_id) if MESSAGING_ENABLED else [], 20),
+        "system_observation_updates": _safe_history_slice(_system_observation_updates_for_agent(agent_id), 20),
+        "histories": {
+            "round_history": round_history,
+            "decision_history": decision_history,
+            "signal_history": _safe_history_slice(state_snap.get("signal_history", []), 10),
+            "social_history": _safe_history_slice(state_snap.get("social_history", []), 10),
+            "observation_history": _safe_history_slice(state_snap.get("observation_history", []), 10),
+        },
+        "latest": {
+            "last_action_status": latest.get("action_status"),
+            "last_reason": latest.get("reason"),
+            "last_decision_round": latest.get("decision_round"),
+            "last_choice_index": latest.get("choice_index"),
+        },
+    }
+
+
+def build_dashboard_agent_index() -> List[Dict[str, Any]]:
+    known_ids = sorted(set(SPAWN_EDGE_BY_AGENT) | set(AGENT_STATES) | set(agent_live_status))
+    rows: List[Dict[str, Any]] = []
+    for agent_id in known_ids:
+        snap = build_agent_dashboard_snapshot(agent_id)
+        if snap is None:
+            continue
+        rows.append({
+            "agent_id": agent_id,
+            "active": bool(snap["current"]["active"]),
+            "has_departed": bool(snap["current"]["has_departed"]),
+            "current_edge": snap["current"]["current_edge"],
+            "p_danger": snap["belief"].get("p_danger"),
+            "confidence": snap["psychology"].get("confidence"),
+            "last_action_status": snap["latest"].get("last_action_status"),
+            "last_seen_sim_t_s": snap["current"].get("last_seen_sim_t_s"),
+        })
+    rows.sort(key=lambda item: (not item["active"], item["agent_id"]))
+    return rows
 
 
 def _system_observation_updates_for_agent(agent_id: str) -> List[Dict[str, Any]]:
@@ -3463,6 +3795,7 @@ try:
         process_pending_departures(step_idx)
         sim_t = traci.simulation.getTime()
         active_vehicle_ids = list(traci.vehicle.getIDList())
+        _refresh_active_agent_live_status(sim_t, active_vehicle_ids)
         fires = active_fires(sim_t)
         fire_geom = [(float(item["x"]), float(item["y"]), float(item["r"])) for item in fires]
         for vid in active_vehicle_ids:
