@@ -22,6 +22,10 @@ def _psychology(confidence=0.9):
     return {"confidence": confidence}
 
 
+def _neighborhood_obs(pressure=0.0):
+    return {"social_departure_pressure": pressure}
+
+
 class TestShouldDepartNow:
     def test_returns_two_tuple_bool_and_str(self):
         state = ensure_agent_state("v0", 0.0)
@@ -82,3 +86,43 @@ class TestShouldDepartNow:
         belief = _belief(p_safe=0.35, p_risky=0.05, p_danger=0.60)
         departed, clause = should_depart_now(state, belief, _psychology(confidence=0.9), sim_t_s=0.0)
         assert clause != "risk_threshold"
+
+    def test_neighbor_departure_activity_triggers(self):
+        state = ensure_agent_state(
+            "v8",
+            0.0,
+            default_theta_r=0.9,
+            default_theta_u=0.05,
+            default_social_trigger=0.5,
+            default_social_min_danger=0.15,
+        )
+        belief = _belief(p_safe=0.80, p_risky=0.05, p_danger=0.20)
+        departed, clause = should_depart_now(
+            state,
+            belief,
+            _psychology(confidence=0.9),
+            sim_t_s=0.0,
+            neighborhood_observation=_neighborhood_obs(pressure=0.7),
+        )
+        assert departed is True
+        assert clause == "neighbor_departure_activity"
+
+    def test_neighbor_departure_activity_respects_min_danger(self):
+        state = ensure_agent_state(
+            "v9",
+            0.0,
+            default_theta_r=0.9,
+            default_theta_u=0.05,
+            default_social_trigger=0.5,
+            default_social_min_danger=0.15,
+        )
+        belief = _belief(p_safe=0.90, p_risky=0.08, p_danger=0.05)
+        departed, clause = should_depart_now(
+            state,
+            belief,
+            _psychology(confidence=0.9),
+            sim_t_s=0.0,
+            neighborhood_observation=_neighborhood_obs(pressure=0.9),
+        )
+        assert departed is False
+        assert clause == "wait"

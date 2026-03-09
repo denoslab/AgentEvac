@@ -9,6 +9,7 @@ from agentevac.agents.agent_state import (
     AGENT_STATES,
     AgentRuntimeState,
     append_decision_history,
+    append_observation_history,
     append_signal_history,
     append_social_history,
     ensure_agent_state,
@@ -60,7 +61,19 @@ class TestEnsureAgentState:
 
     def test_all_profile_keys_present(self):
         state = ensure_agent_state("v7", 0.0)
-        for key in ("theta_trust", "theta_r", "theta_u", "gamma", "lambda_e", "lambda_t"):
+        for key in (
+            "theta_trust",
+            "theta_r",
+            "theta_u",
+            "gamma",
+            "lambda_e",
+            "lambda_t",
+            "neighbor_window_s",
+            "social_recent_weight",
+            "social_total_weight",
+            "social_trigger",
+            "social_min_danger",
+        ):
             assert key in state.profile
 
     def test_state_stored_in_global_registry(self):
@@ -108,6 +121,17 @@ class TestAppendBoundedHistories:
             append_decision_history(state, {"i": i})
         assert len(state.decision_history) == 32
 
+    def test_observation_history_appends(self):
+        state = self._make_state("obs1")
+        append_observation_history(state, {"summary": "One neighbor has departed."})
+        assert len(state.observation_history) == 1
+
+    def test_observation_history_respects_max_items(self):
+        state = self._make_state("obs2")
+        for i in range(10):
+            append_observation_history(state, {"i": i}, max_items=4)
+        assert len(state.observation_history) == 4
+
     def test_appended_item_is_a_copy(self):
         state = self._make_state("copy1")
         original = {"x": 1}
@@ -127,7 +151,7 @@ class TestSnapshotAgentState:
         snap = snapshot_agent_state(state)
         for key in ("agent_id", "created_sim_t_s", "last_sim_t_s", "profile",
                     "belief", "psychology", "signal_history", "social_history",
-                    "decision_history", "has_departed"):
+                    "observation_history", "decision_history", "has_departed"):
             assert key in snap
 
     def test_snapshot_agent_id_matches(self):

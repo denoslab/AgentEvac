@@ -22,7 +22,7 @@ returns ``True``.  The function implements a three-clause OR rule:
        situations where they should arguably err on the side of caution.
 """
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from agentevac.agents.agent_state import AgentRuntimeState
 
@@ -32,6 +32,7 @@ def should_depart_now(
     belief: Dict[str, Any],
     psychology: Dict[str, Any],
     sim_t_s: float,
+    neighborhood_observation: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, str]:
     """Evaluate whether an agent should depart from its spawn edge at the current tick.
 
@@ -40,6 +41,9 @@ def should_depart_now(
         2. ``urgency_threshold``     : ``gamma^elapsed_s * p_safe < theta_u``
         3. ``low_confidence_precaution``: ``confidence < 0.15`` and
                                          ``p_danger >= max(0.20, theta_r * 0.6)``
+        4. ``neighbor_departure_activity``: neighborhood departure pressure exceeds
+                                            the social trigger and ``p_danger`` is
+                                            already non-trivial
 
     If none of the clauses fire, returns ``(False, "wait")``.
 
@@ -48,10 +52,12 @@ def should_depart_now(
         belief: Current Bayesian belief dict with keys "p_danger", "p_safe", etc.
         psychology: Current psychology dict with key "confidence".
         sim_t_s: Current simulation time in seconds.
+        neighborhood_observation: Optional system-generated local departure summary.
 
     Returns:
         A ``(should_depart, reason)`` tuple where ``reason`` is one of
-        "risk_threshold", "urgency_threshold", "low_confidence_precaution", or "wait".
+        "risk_threshold", "urgency_threshold", "low_confidence_precaution",
+        "neighbor_departure_activity", or "wait".
     """
     p_danger = float(belief.get("p_danger", 0.0))
     p_safe = float(belief.get("p_safe", 0.0))
@@ -78,5 +84,12 @@ def should_depart_now(
     confidence = float(psychology.get("confidence", 0.0))
     if confidence < 0.15 and p_danger >= max(0.20, theta_r * 0.6):
         return True, "low_confidence_precaution"
+
+    if neighborhood_observation:
+        social_pressure = float(neighborhood_observation.get("social_departure_pressure", 0.0) or 0.0)
+        social_trigger = float(agent_state.profile.get("social_trigger", 0.5))
+        social_min_danger = float(agent_state.profile.get("social_min_danger", 0.15))
+        if social_pressure >= social_trigger and p_danger >= social_min_danger:
+            return True, "neighbor_departure_activity"
 
     return False, "wait"

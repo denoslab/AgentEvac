@@ -54,6 +54,8 @@ def load_scenario_config(mode: str) -> Dict[str, Any]:
             - ``route_head_forecast_visible``   : Whether per-route-head risk is shown.
             - ``official_route_guidance_visible``: Whether advisory labels are shown.
             - ``expected_utility_visible``      : Whether computed utility scores are shown.
+            - ``neighborhood_observation_visible``: Whether local simulator-generated
+                                                   neighborhood observations are shown.
     """
     name = str(mode).strip().lower()
     if name == "no_notice":
@@ -67,6 +69,7 @@ def load_scenario_config(mode: str) -> Dict[str, Any]:
             "route_head_forecast_visible": False,
             "official_route_guidance_visible": False,
             "expected_utility_visible": False,
+            "neighborhood_observation_visible": True,
         }
     if name == "alert_guided":
         return {
@@ -79,6 +82,7 @@ def load_scenario_config(mode: str) -> Dict[str, Any]:
             "route_head_forecast_visible": False,
             "official_route_guidance_visible": False,
             "expected_utility_visible": False,
+            "neighborhood_observation_visible": True,
         }
     return {
         "mode": "advice_guided",
@@ -90,6 +94,7 @@ def load_scenario_config(mode: str) -> Dict[str, Any]:
         "route_head_forecast_visible": True,
         "official_route_guidance_visible": True,
         "expected_utility_visible": True,
+        "neighborhood_observation_visible": True,
     }
 
 

@@ -313,6 +313,27 @@ class RouteReplay:
         }
         self._write_jsonl(rec)
 
+    def record_system_observation(
+        self,
+        step: int,
+        sim_t_s: float,
+        veh_id: str,
+        observation: Dict[str, Any],
+    ):
+        """Record one simulator-generated observation update.
+
+        These records are write-only metadata for audit/debugging and are ignored by
+        route replay.
+        """
+        rec = {
+            "event": "system_observation",
+            "step": int(step),
+            "time_s": float(sim_t_s),
+            "veh_id": str(veh_id),
+            "observation": dict(observation or {}),
+        }
+        self._write_jsonl(rec)
+
     def departure_record_for_step(self, step: int, veh_id: str) -> Optional[Dict[str, Any]]:
         """Return the recorded departure-release event for one vehicle at one step."""
         if self.mode != "replay":
