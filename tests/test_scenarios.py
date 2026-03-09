@@ -43,7 +43,7 @@ class TestLoadScenarioConfig:
             for key in (
                 "mode", "title", "description", "forecast_visible",
                 "route_head_forecast_visible", "official_route_guidance_visible",
-                "expected_utility_visible",
+                "expected_utility_visible", "neighborhood_observation_visible",
             ):
                 assert key in cfg, f"Missing key '{key}' for mode '{mode}'"
 

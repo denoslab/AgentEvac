@@ -343,6 +343,27 @@ class RouteReplay:
         }
         self._write_jsonl(rec)
 
+    def record_system_observation(
+        self,
+        step: int,
+        sim_t_s: float,
+        veh_id: str,
+        observation: Dict[str, Any],
+    ):
+        """Record one simulator-authored observation update for an agent.
+
+        These events are written for audit/debugging only and are ignored by replay
+        action application.
+        """
+        rec = {
+            "event": "system_observation",
+            "step": int(step),
+            "time_s": float(sim_t_s),
+            "veh_id": str(veh_id),
+            "observation": dict(observation or {}),
+        }
+        self._write_jsonl(rec)
+
     def record_llm_dialog(
         self,
         step: int,

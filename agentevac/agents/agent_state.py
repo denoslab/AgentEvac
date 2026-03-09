@@ -17,6 +17,14 @@ Psychological profile parameters stored in each agent's ``profile`` dict:
                          Larger values make agents more averse to hazardous routes.
     - ``lambda_t``     : Travel-time weight in the route utility function (≥ 0).
                          Larger values make agents prefer shorter travel times.
+    - ``neighbor_window_s``      : Recency window for local neighborhood departure observations.
+    - ``social_recent_weight``   : Weight on recent neighbor departures when computing
+                                   social departure pressure.
+    - ``social_total_weight``    : Weight on cumulative departed neighbors when computing
+                                   social departure pressure.
+    - ``social_trigger``         : Pressure threshold that can trigger social departure.
+    - ``social_min_danger``      : Minimum danger floor required before social departure
+                                   pressure can trigger departure.
 """
 
 import math
@@ -42,6 +50,7 @@ class AgentRuntimeState:
         social_history: Bounded list of recent social signals derived from inbox messages.
         decision_history: Bounded list of past decision records (predeparture + routing).
             Passed to the LLM as ``agent_self_history`` so agents can avoid repeated mistakes.
+        observation_history: Bounded list of system-generated local neighborhood observations.
         has_departed: True once the vehicle has been added to the SUMO simulation.
     """
 
@@ -54,6 +63,7 @@ class AgentRuntimeState:
     signal_history: List[Dict[str, Any]] = field(default_factory=list)
     social_history: List[Dict[str, Any]] = field(default_factory=list)
     decision_history: List[Dict[str, Any]] = field(default_factory=list)
+    observation_history: List[Dict[str, Any]] = field(default_factory=list)
     has_departed: bool = True
 
 
@@ -72,6 +82,11 @@ def ensure_agent_state(
     default_gamma: float = 0.995,
     default_lambda_e: float = 1.0,
     default_lambda_t: float = 0.1,
+    default_neighbor_window_s: float = 120.0,
+    default_social_recent_weight: float = 0.7,
+    default_social_total_weight: float = 0.3,
+    default_social_trigger: float = 0.5,
+    default_social_min_danger: float = 0.15,
 ) -> AgentRuntimeState:
     """Retrieve an existing agent state or create a new one with default parameters.
 
@@ -89,6 +104,12 @@ def ensure_agent_state(
         default_gamma: Per-second urgency discount factor.
         default_lambda_e: Initial exposure weight for route utility scoring.
         default_lambda_t: Initial travel-time weight for route utility scoring.
+        default_neighbor_window_s: Window for recent neighborhood departure observations.
+        default_social_recent_weight: Weight on recent departures in social pressure.
+        default_social_total_weight: Weight on cumulative departures in social pressure.
+        default_social_trigger: Pressure threshold for socially triggered departure.
+        default_social_min_danger: Minimum danger probability required before social
+            departure pressure can trigger departure.
 
     Returns:
         The (possibly newly created) ``AgentRuntimeState`` for this vehicle.
@@ -108,6 +129,11 @@ def ensure_agent_state(
                 "gamma": float(default_gamma),
                 "lambda_e": float(default_lambda_e),
                 "lambda_t": float(default_lambda_t),
+                "neighbor_window_s": float(default_neighbor_window_s),
+                "social_recent_weight": float(default_social_recent_weight),
+                "social_total_weight": float(default_social_total_weight),
+                "social_trigger": float(default_social_trigger),
+                "social_min_danger": float(default_social_min_danger),
             },
             belief={
                 "p_safe": 1.0 / 3.0,
@@ -130,6 +156,11 @@ def ensure_agent_state(
     state.profile.setdefault("gamma", float(default_gamma))
     state.profile.setdefault("lambda_e", float(default_lambda_e))
     state.profile.setdefault("lambda_t", float(default_lambda_t))
+    state.profile.setdefault("neighbor_window_s", float(default_neighbor_window_s))
+    state.profile.setdefault("social_recent_weight", float(default_social_recent_weight))
+    state.profile.setdefault("social_total_weight", float(default_social_total_weight))
+    state.profile.setdefault("social_trigger", float(default_social_trigger))
+    state.profile.setdefault("social_min_danger", float(default_social_min_danger))
     state.last_sim_t_s = float(sim_t_s)
     return state
 
@@ -209,6 +240,25 @@ def append_decision_history(
     _append_bounded(state.decision_history, decision, max_items)
 
 
+def append_observation_history(
+    state: AgentRuntimeState,
+    observation: Dict[str, Any],
+    *,
+    max_items: int = 16,
+) -> None:
+    """Append a system-generated observation to the agent's observation history.
+
+    These observations are simulator-authored facts, such as nearby household departure
+    updates. They are kept separately from peer-authored social messages.
+
+    Args:
+        state: The agent whose history to update.
+        observation: The observation dict to append.
+        max_items: Maximum number of observation records to retain.
+    """
+    _append_bounded(state.observation_history, observation, max_items)
+
+
 def snapshot_agent_state(state: AgentRuntimeState) -> Dict[str, Any]:
     """Serialize an ``AgentRuntimeState`` to a plain dict for logging or replay.
 
@@ -232,5 +282,6 @@ def snapshot_agent_state(state: AgentRuntimeState) -> Dict[str, Any]:
         "signal_history": [dict(item) for item in state.signal_history],
         "social_history": [dict(item) for item in state.social_history],
         "decision_history": [dict(item) for item in state.decision_history],
+        "observation_history": [dict(item) for item in state.observation_history],
         "has_departed": bool(state.has_departed),
     }

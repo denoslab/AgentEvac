@@ -116,6 +116,21 @@ class TestRouteReplayRecordMode:
         rr.close()
         rr.close()  # second call must not raise
 
+    def test_record_system_observation_writes_jsonl_record(self, tmp_path):
+        rr = RouteReplay(mode="record", path=_record_path(tmp_path))
+        rr.record_system_observation(
+            step=2,
+            sim_t_s=10.0,
+            veh_id="v1",
+            observation={"kind": "neighbor_departure_observation", "summary": "One neighbor has departed."},
+        )
+        rr.close()
+        jsonl_files = [p for p in tmp_path.iterdir() if p.suffix == ".jsonl"]
+        with open(jsonl_files[0], "r", encoding="utf-8") as fh:
+            records = [json.loads(line) for line in fh if line.strip()]
+        assert records[-1]["event"] == "system_observation"
+        assert records[-1]["veh_id"] == "v1"
+
     def test_record_in_replay_mode_is_noop(self, tmp_path):
         jsonl_path = str(tmp_path / "fixture.jsonl")
         _write_jsonl(jsonl_path, [_make_route_change()])
@@ -148,6 +163,7 @@ class TestRouteReplayReplayMode:
             _make_route_change(step=1),
             {"event": "agent_cognition", "step": 2, "veh_id": "v2", "time_s": 10.0},
             {"event": "metrics_snapshot", "step": 3, "time_s": 15.0},
+            {"event": "system_observation", "step": 4, "time_s": 20.0, "veh_id": "v3", "observation": {"summary": "x"}},
         ]
         _write_jsonl(jsonl_path, records)
         rr = RouteReplay(mode="replay", path=jsonl_path)
@@ -155,6 +171,7 @@ class TestRouteReplayReplayMode:
         assert 1 in rr._schedule
         assert 2 not in rr._schedule
         assert 3 not in rr._schedule
+        assert 4 not in rr._schedule
 
     def test_multiple_vehicles_per_step(self, tmp_path):
         jsonl_path = str(tmp_path / "schedule.jsonl")
