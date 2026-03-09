@@ -24,6 +24,9 @@ dev = [
     "mkdocs-material",
     "build",
 ]
+plot = [
+    "matplotlib>=3.8",
+]
 
 [project.scripts]
 # Calibration / sweep tools expose a proper main() and work as CLI scripts.

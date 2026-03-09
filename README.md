@@ -95,3 +95,46 @@ agentevac-study \
 ```
 
 This runs a grid search over information noise, delay, and trust parameters and fits results against a reference metrics file.
+
+## Plotting Completed Runs
+
+Install the plotting dependency:
+
+```bash
+pip install -e .[plot]
+```
+
+Generate figures for the latest run:
+
+```bash
+python3 scripts/plot_all_run_artifacts.py
+```
+
+Generate figures for a specific run ID:
+
+```bash
+python3 scripts/plot_all_run_artifacts.py --run-id 20260309_030340
+```
+
+Useful individual plotting commands:
+
+```bash
+# 2x2 dashboard for one run_metrics_*.json
+python3 scripts/plot_run_metrics.py --metrics outputs/run_metrics_20260309_030340.json
+
+# Departures, messages, system observations, and route changes over time
+python3 scripts/plot_departure_timeline.py \
+  --events outputs/events_20260309_030340.jsonl \
+  --replay outputs/llm_routes_20260309_030340.jsonl
+
+# Messaging and dialog activity
+python3 scripts/plot_agent_communication.py \
+  --events outputs/events_20260309_030340.jsonl \
+  --dialogs outputs/llm_routes_20260309_030340.dialogs.csv
+
+# Compare multiple completed runs or sweep outputs
+python3 scripts/plot_experiment_comparison.py \
+  --results-json outputs/experiments/experiment_results.json
+```
+
+By default, plots are saved under `outputs/figures/` or next to the selected input file.
