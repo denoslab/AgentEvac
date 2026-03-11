@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from scripts._plot_common import ensure_output_path, load_json, require_matplotlib
+    from scripts._plot_common import ensure_output_path, load_json, require_matplotlib, resolve_optional_run_params
 except ModuleNotFoundError:
-    from _plot_common import ensure_output_path, load_json, require_matplotlib
+    from _plot_common import ensure_output_path, load_json, require_matplotlib, resolve_optional_run_params
 
 
 def _parse_args() -> argparse.Namespace:
@@ -57,6 +57,22 @@ def _metrics_row(metrics: dict[str, Any]) -> dict[str, float]:
     }
 
 
+def _param_metadata(path: Path) -> dict[str, Any]:
+    """Load companion run parameters for plots that only have KPI JSON files."""
+    params_path = resolve_optional_run_params(None, path)
+    if params_path is None:
+        return {}
+    payload = load_json(params_path)
+    cognition = payload.get("cognition") or {}
+    return {
+        "scenario": str(payload.get("scenario", "unknown")),
+        "info_sigma": _safe_float(cognition.get("info_sigma")),
+        "info_delay_s": _safe_float(cognition.get("info_delay_s")),
+        "theta_trust": _safe_float(cognition.get("theta_trust")),
+        "params_path": str(params_path),
+    }
+
+
 def load_cases(results_json: Path | None, metrics_glob: str) -> tuple[list[dict[str, Any]], Path]:
     rows: list[dict[str, Any]] = []
     if results_json is not None:
@@ -72,12 +88,13 @@ def load_cases(results_json: Path | None, metrics_glob: str) -> tuple[list[dict[
                 continue
             metrics = load_json(path)
             case = item.get("case") or {}
+            params_meta = _param_metadata(path)
             row = {
                 "label": str(item.get("case_id") or path.stem),
-                "scenario": str(case.get("scenario", "unknown")),
-                "info_sigma": _safe_float(case.get("info_sigma")),
-                "info_delay_s": _safe_float(case.get("info_delay_s")),
-                "theta_trust": _safe_float(case.get("theta_trust")),
+                "scenario": str(case.get("scenario", params_meta.get("scenario", "unknown"))),
+                "info_sigma": _safe_float(case.get("info_sigma", params_meta.get("info_sigma"))),
+                "info_delay_s": _safe_float(case.get("info_delay_s", params_meta.get("info_delay_s"))),
+                "theta_trust": _safe_float(case.get("theta_trust", params_meta.get("theta_trust"))),
                 "metrics_path": str(path),
             }
             row.update(_metrics_row(metrics))
@@ -89,12 +106,13 @@ def load_cases(results_json: Path | None, metrics_glob: str) -> tuple[list[dict[
         raise SystemExit(f"No metrics files match pattern: {metrics_glob}")
     for path in matches:
         metrics = load_json(path)
+        params_meta = _param_metadata(path)
         row = {
             "label": path.stem,
-            "scenario": "unknown",
-            "info_sigma": 0.0,
-            "info_delay_s": 0.0,
-            "theta_trust": 0.0,
+            "scenario": str(params_meta.get("scenario", "unknown")),
+            "info_sigma": _safe_float(params_meta.get("info_sigma")),
+            "info_delay_s": _safe_float(params_meta.get("info_delay_s")),
+            "theta_trust": _safe_float(params_meta.get("theta_trust")),
             "metrics_path": str(path),
         }
         row.update(_metrics_row(metrics))

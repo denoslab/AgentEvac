@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import Any, Iterable, List
 
+from agentevac.utils.run_parameters import companion_parameter_path
+
 
 def newest_file(pattern: str) -> Path:
     """Return the newest file matching ``pattern``.
@@ -28,6 +30,19 @@ def resolve_input(path_arg: str | None, pattern: str) -> Path:
             raise FileNotFoundError(f"Input file does not exist: {path}")
         return path
     return newest_file(pattern)
+
+
+def resolve_optional_run_params(path_arg: str | None, reference_path: Path | None) -> Path | None:
+    """Resolve an explicit or companion run-parameter log path if available."""
+    if path_arg:
+        path = Path(path_arg)
+        if not path.exists():
+            raise FileNotFoundError(f"Input file does not exist: {path}")
+        return path
+    if reference_path is None:
+        return None
+    candidate = companion_parameter_path(reference_path)
+    return candidate if candidate.exists() else None
 
 
 def load_json(path: Path) -> Any:

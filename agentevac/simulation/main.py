@@ -92,6 +92,7 @@ from agentevac.agents.neighborhood_observation import (
     summarize_neighborhood_observation,
     compute_social_departure_pressure,
 )
+from agentevac.utils.run_parameters import write_run_parameter_log
 from agentevac.utils.replay import RouteReplay
 
 # ---- OpenAI (LLM control) ----
@@ -249,6 +250,10 @@ def _parse_cli_args() -> argparse.Namespace:
         "--metrics-log-path",
         help="Override METRICS_LOG_PATH env var (timestamp is appended).",
     )
+    parser.add_argument(
+        "--params-log-path",
+        help="Override PARAMS_LOG_PATH env var (companion run suffix is preserved).",
+    )
     parser.add_argument("--overlay-max-label-chars", type=int, help="Max overlay label characters.")
     parser.add_argument("--overlay-poi-layer", type=int, help="POI layer for overlays.")
     parser.add_argument("--overlay-poi-offset-m", type=float, help="POI offset in meters.")
@@ -321,6 +326,7 @@ METRICS_ENABLED = _parse_bool(os.getenv("METRICS_ENABLED", "1"), True)
 if CLI_ARGS.metrics is not None:
     METRICS_ENABLED = (CLI_ARGS.metrics == "on")
 METRICS_LOG_PATH = CLI_ARGS.metrics_log_path or os.getenv("METRICS_LOG_PATH", "outputs/run_metrics.json")
+PARAMS_LOG_PATH = CLI_ARGS.params_log_path or os.getenv("PARAMS_LOG_PATH", "outputs/run_params.json")
 WEB_DASHBOARD_ENABLED = _parse_bool(os.getenv("WEB_DASHBOARD_ENABLED", "0"), False)
 if CLI_ARGS.web_dashboard is not None:
     WEB_DASHBOARD_ENABLED = (CLI_ARGS.web_dashboard == "on")
@@ -1311,6 +1317,61 @@ SYSTEM_OBSERVATION_INBOXES: Dict[str, List[Dict[str, Any]]] = {
 }
 
 
+def _run_parameter_payload() -> Dict[str, Any]:
+    """Build the persisted run-parameter snapshot used by post-run plotting tools."""
+    return {
+        "run_mode": RUN_MODE,
+        "scenario": SCENARIO_MODE,
+        "sumo_binary": SUMO_BINARY,
+        "messaging_controls": {
+            "enabled": MESSAGING_ENABLED,
+            "max_message_chars": MAX_MESSAGE_CHARS,
+            "max_inbox_messages": MAX_INBOX_MESSAGES,
+            "max_sends_per_agent_per_round": MAX_SENDS_PER_AGENT_PER_ROUND,
+            "max_broadcasts_per_round": MAX_BROADCASTS_PER_ROUND,
+            "ttl_rounds": TTL_ROUNDS,
+        },
+        "driver_briefing_thresholds": {
+            "margin_very_close_m": MARGIN_VERY_CLOSE_M,
+            "margin_near_m": MARGIN_NEAR_M,
+            "margin_buffered_m": MARGIN_BUFFERED_M,
+            "risk_density_low": RISK_DENSITY_LOW,
+            "risk_density_medium": RISK_DENSITY_MEDIUM,
+            "risk_density_high": RISK_DENSITY_HIGH,
+            "delay_fast_ratio": DELAY_FAST_RATIO,
+            "delay_moderate_ratio": DELAY_MODERATE_RATIO,
+            "delay_heavy_ratio": DELAY_HEAVY_RATIO,
+            "caution_min_margin_m": CAUTION_MIN_MARGIN_M,
+            "recommended_min_margin_m": RECOMMENDED_MIN_MARGIN_M,
+        },
+        "cognition": {
+            "info_sigma": INFO_SIGMA,
+            "info_delay_s": INFO_DELAY_S,
+            "social_signal_max_messages": SOCIAL_SIGNAL_MAX_MESSAGES,
+            "theta_trust": DEFAULT_THETA_TRUST,
+            "belief_inertia": BELIEF_INERTIA,
+        },
+        "departure": {
+            "theta_r": DEFAULT_THETA_R,
+            "theta_u": DEFAULT_THETA_U,
+            "gamma": DEFAULT_GAMMA,
+        },
+        "utility": {
+            "lambda_e": DEFAULT_LAMBDA_E,
+            "lambda_t": DEFAULT_LAMBDA_T,
+        },
+        "neighbor_observation": {
+            "scope": NEIGHBOR_SCOPE,
+            "window_s": DEFAULT_NEIGHBOR_WINDOW_S,
+            "social_recent_weight": DEFAULT_SOCIAL_RECENT_WEIGHT,
+            "social_total_weight": DEFAULT_SOCIAL_TOTAL_WEIGHT,
+            "social_trigger": DEFAULT_SOCIAL_TRIGGER,
+            "social_min_danger": DEFAULT_SOCIAL_MIN_DANGER,
+            "max_system_observations": MAX_SYSTEM_OBSERVATIONS,
+        },
+    }
+
+
 # =========================
 # Step 4: Define SUMO configuration
 # =========================
@@ -1330,6 +1391,11 @@ traci.start(Sumo_config)
 replay = RouteReplay(RUN_MODE, REPLAY_LOG_PATH)
 events = LiveEventStream(EVENTS_ENABLED, EVENTS_LOG_PATH, EVENTS_STDOUT)
 metrics = RunMetricsCollector(METRICS_ENABLED, METRICS_LOG_PATH, RUN_MODE)
+params_log_path = write_run_parameter_log(
+    PARAMS_LOG_PATH,
+    _run_parameter_payload(),
+    reference_path=metrics.path or events.path or replay.path,
+)
 dashboard = WebDashboard(
     enabled=WEB_DASHBOARD_ENABLED,
     host=WEB_DASHBOARD_HOST,
@@ -1357,6 +1423,7 @@ if events.path:
     print(f"[EVENTS] enabled={EVENTS_ENABLED} path={events.path} stdout={EVENTS_STDOUT}")
 if metrics.path:
     print(f"[METRICS] enabled={METRICS_ENABLED} path={metrics.path}")
+print(f"[RUN_PARAMS] path={params_log_path}")
 print(
     f"[WEB_DASHBOARD] enabled={dashboard.enabled} host={WEB_DASHBOARD_HOST} "
     f"port={WEB_DASHBOARD_PORT} max_events={WEB_DASHBOARD_MAX_EVENTS}"

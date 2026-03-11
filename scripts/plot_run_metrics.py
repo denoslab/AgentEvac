@@ -7,9 +7,23 @@ import argparse
 from pathlib import Path
 
 try:
-    from scripts._plot_common import ensure_output_path, load_json, require_matplotlib, resolve_input, top_items
+    from scripts._plot_common import (
+        ensure_output_path,
+        load_json,
+        require_matplotlib,
+        resolve_input,
+        resolve_optional_run_params,
+        top_items,
+    )
 except ModuleNotFoundError:
-    from _plot_common import ensure_output_path, load_json, require_matplotlib, resolve_input, top_items
+    from _plot_common import (
+        ensure_output_path,
+        load_json,
+        require_matplotlib,
+        resolve_input,
+        resolve_optional_run_params,
+        top_items,
+    )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -20,6 +34,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--metrics",
         help="Path to a metrics JSON file. Defaults to the newest outputs/run_metrics_*.json.",
+    )
+    parser.add_argument(
+        "--params",
+        help="Optional companion run_params JSON path. Defaults to the matching run_params_<id>.json when present.",
     )
     parser.add_argument(
         "--out",
@@ -114,10 +132,41 @@ def _plot_kpi_grid(fig, slot, metrics: dict) -> None:
         ax.text(0, text_y, label, ha="center", va=va, fontsize=10)
 
 
-def plot_metrics_dashboard(metrics_path: Path, *, out_path: Path, show: bool, top_n: int) -> None:
+def _briefing_summary(params: dict | None) -> str | None:
+    """Format driver-briefing thresholds for the dashboard footer."""
+    if not params:
+        return None
+    briefing = params.get("driver_briefing_thresholds") or {}
+    if not briefing:
+        return None
+    return (
+        "Briefing thresholds: "
+        f"margin_m={briefing.get('margin_very_close_m', '?')}/"
+        f"{briefing.get('margin_near_m', '?')}/"
+        f"{briefing.get('margin_buffered_m', '?')} "
+        f"risk_density={briefing.get('risk_density_low', '?')}/"
+        f"{briefing.get('risk_density_medium', '?')}/"
+        f"{briefing.get('risk_density_high', '?')} "
+        f"delay_ratio={briefing.get('delay_fast_ratio', '?')}/"
+        f"{briefing.get('delay_moderate_ratio', '?')}/"
+        f"{briefing.get('delay_heavy_ratio', '?')} "
+        f"advisory_margin_m={briefing.get('caution_min_margin_m', '?')}/"
+        f"{briefing.get('recommended_min_margin_m', '?')}"
+    )
+
+
+def plot_metrics_dashboard(
+    metrics_path: Path,
+    *,
+    out_path: Path,
+    show: bool,
+    top_n: int,
+    params_path: Path | None = None,
+) -> None:
     """Render the run-metrics dashboard and save it to ``out_path``."""
     plt = require_matplotlib()
     metrics = load_json(metrics_path)
+    params = load_json(params_path) if params_path else None
     exposure = metrics.get("average_hazard_exposure", {}).get("per_agent_average", {}) or {}
     travel = metrics.get("average_travel_time", {}).get("per_agent", {}) or {}
     instability = metrics.get("decision_instability", {}).get("per_agent_changes", {}) or {}
@@ -157,9 +206,16 @@ def plot_metrics_dashboard(metrics_path: Path, *, out_path: Path, show: bool, to
         "#72B7B2",
     )
 
-    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    footer = _briefing_summary(params)
+    rect_bottom = 0.04 if footer else 0.0
+    if footer:
+        fig.text(0.02, 0.012, footer, ha="left", va="bottom", fontsize=8)
+
+    fig.tight_layout(rect=(0, rect_bottom, 1, 0.95))
     fig.savefig(out_path, dpi=160, bbox_inches="tight")
     print(f"[PLOT] metrics={metrics_path}")
+    if params_path:
+        print(f"[PLOT] params={params_path}")
     print(f"[PLOT] output={out_path}")
     if show:
         plt.show()
@@ -170,8 +226,15 @@ def main() -> None:
     """CLI entry point for the run-metrics dashboard."""
     args = _parse_args()
     metrics_path = resolve_input(args.metrics, "outputs/run_metrics_*.json")
+    params_path = resolve_optional_run_params(args.params, metrics_path)
     out_path = ensure_output_path(metrics_path, args.out, suffix="dashboard")
-    plot_metrics_dashboard(metrics_path, out_path=out_path, show=args.show, top_n=args.top_n)
+    plot_metrics_dashboard(
+        metrics_path,
+        out_path=out_path,
+        show=args.show,
+        top_n=args.top_n,
+        params_path=params_path,
+    )
 
 
 if __name__ == "__main__":

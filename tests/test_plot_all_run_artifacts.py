@@ -14,6 +14,7 @@ class TestResolveRunId:
             metrics=None,
             replay=None,
             dialogs=None,
+            params=None,
         )
         assert _resolve_run_id(args) == "20260309_030340"
 
@@ -24,6 +25,7 @@ class TestResolveRunId:
             metrics=None,
             replay=None,
             dialogs=None,
+            params=None,
         )
         assert _resolve_run_id(args) == "20260309_030340"
 
@@ -40,17 +42,20 @@ class TestResolvePaths:
             "step,time_s,veh_id,control_mode,model,system_prompt,user_prompt,response_text,parsed_json,error\n",
             encoding="utf-8",
         )
+        (out / "run_params_20260309_030340.json").write_text("{}", encoding="utf-8")
         args = Namespace(
             metrics=None,
             events=None,
             replay=None,
             dialogs=None,
+            params=None,
         )
         paths = _resolve_paths(args, "20260309_030340")
         assert paths["metrics"] == out / "run_metrics_20260309_030340.json"
         assert paths["events"] == out / "events_20260309_030340.jsonl"
         assert paths["replay"] == out / "llm_routes_20260309_030340.jsonl"
         assert paths["dialogs"] == out / "llm_routes_20260309_030340.dialogs.csv"
+        assert paths["params"] == out / "run_params_20260309_030340.json"
 
     def test_missing_replay_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -67,6 +72,8 @@ class TestResolvePaths:
             events=None,
             replay=None,
             dialogs=None,
+            params=None,
         )
         paths = _resolve_paths(args, "20260309_030340")
         assert paths["replay"] is None
+        assert paths["params"] is None

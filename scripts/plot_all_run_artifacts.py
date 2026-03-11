@@ -33,6 +33,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--events", help="Explicit events JSONL path.")
     parser.add_argument("--replay", help="Explicit llm_routes JSONL path.")
     parser.add_argument("--dialogs", help="Explicit dialogs CSV path.")
+    parser.add_argument("--params", help="Explicit run_params JSON path.")
     parser.add_argument(
         "--results-json",
         help="Optional experiment_results.json to also generate the multi-run comparison figure.",
@@ -61,7 +62,7 @@ def _resolve_run_id(args: argparse.Namespace) -> str:
     """Resolve the run ID from CLI args or the newest events file."""
     if args.run_id:
         return str(args.run_id)
-    for path_arg in (args.events, args.metrics, args.replay, args.dialogs):
+    for path_arg in (args.events, args.metrics, args.replay, args.dialogs, args.params):
         if path_arg:
             match = re.search(r"(\d{8}_\d{6})", Path(path_arg).name)
             if match:
@@ -77,6 +78,7 @@ def _resolve_paths(args: argparse.Namespace, run_id: str) -> dict[str, Path | No
     events = _maybe_path(args.events)
     replay = _maybe_path(args.replay)
     dialogs = _maybe_path(args.dialogs)
+    params = _maybe_path(args.params)
 
     if metrics is None:
         candidate = Path(f"outputs/run_metrics_{run_id}.json")
@@ -90,12 +92,16 @@ def _resolve_paths(args: argparse.Namespace, run_id: str) -> dict[str, Path | No
     if dialogs is None:
         candidate = Path(f"outputs/llm_routes_{run_id}.dialogs.csv")
         dialogs = candidate if candidate.exists() else newest_file("outputs/*.dialogs.csv")
+    if params is None:
+        candidate = Path(f"outputs/run_params_{run_id}.json")
+        params = candidate if candidate.exists() else None
 
     return {
         "metrics": metrics,
         "events": events,
         "replay": replay,
         "dialogs": dialogs,
+        "params": params,
     }
 
 
@@ -112,6 +118,7 @@ def main() -> None:
     events_path = paths["events"]
     replay_path = paths["replay"]
     dialogs_path = paths["dialogs"]
+    params_path = paths["params"]
     assert metrics_path is not None
     assert events_path is not None
     assert dialogs_path is not None
@@ -121,6 +128,7 @@ def main() -> None:
         out_path=out_dir / "run_metrics.dashboard.png",
         show=args.show,
         top_n=args.top_n,
+        params_path=params_path,
     )
     plot_timeline(
         events_path,
@@ -135,6 +143,7 @@ def main() -> None:
         out_path=out_dir / "agent_communication.png",
         show=args.show,
         top_n=args.top_n,
+        params_path=params_path,
     )
     if replay_path is not None:
         plot_agent_round_timeline(
@@ -175,6 +184,8 @@ def main() -> None:
     if replay_path:
         print(f"[PLOT] replay={replay_path}")
     print(f"[PLOT] dialogs={dialogs_path}")
+    if params_path:
+        print(f"[PLOT] params={params_path}")
     if comparison_source:
         print(f"[PLOT] comparison_source={comparison_source}")
 

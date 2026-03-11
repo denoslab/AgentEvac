@@ -9,9 +9,25 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from scripts._plot_common import ensure_output_path, load_jsonl, require_matplotlib, resolve_input, top_items
+    from scripts._plot_common import (
+        ensure_output_path,
+        load_json,
+        load_jsonl,
+        require_matplotlib,
+        resolve_input,
+        resolve_optional_run_params,
+        top_items,
+    )
 except ModuleNotFoundError:
-    from _plot_common import ensure_output_path, load_jsonl, require_matplotlib, resolve_input, top_items
+    from _plot_common import (
+        ensure_output_path,
+        load_json,
+        load_jsonl,
+        require_matplotlib,
+        resolve_input,
+        resolve_optional_run_params,
+        top_items,
+    )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -25,6 +41,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dialogs",
         help="Path to a *.dialogs.csv file. Defaults to the newest outputs/*.dialogs.csv.",
+    )
+    parser.add_argument(
+        "--params",
+        help="Optional companion run_params JSON path. Defaults to the matching run_params_<id>.json when present.",
     )
     parser.add_argument(
         "--out",
@@ -156,6 +176,24 @@ def _plot_dialog_modes(ax, dialog_rows: list[dict[str, str]]) -> None:
     ax2.set_ylabel("Average Response Length (chars)")
 
 
+def _messaging_summary(params: dict | None) -> str | None:
+    """Format messaging anti-bloat controls for the dashboard footer."""
+    if not params:
+        return None
+    messaging = params.get("messaging_controls") or {}
+    if not messaging:
+        return None
+    return (
+        "Messaging controls: "
+        f"enabled={messaging.get('enabled', '?')} "
+        f"max_chars={messaging.get('max_message_chars', '?')} "
+        f"max_inbox={messaging.get('max_inbox_messages', '?')} "
+        f"max_sends={messaging.get('max_sends_per_agent_per_round', '?')} "
+        f"max_broadcasts={messaging.get('max_broadcasts_per_round', '?')} "
+        f"ttl_rounds={messaging.get('ttl_rounds', '?')}"
+    )
+
+
 def plot_agent_communication(
     *,
     events_path: Path,
@@ -163,10 +201,12 @@ def plot_agent_communication(
     out_path: Path,
     show: bool,
     top_n: int,
+    params_path: Path | None = None,
 ) -> None:
     plt = require_matplotlib()
     event_rows = load_jsonl(events_path)
     dialog_rows = _load_dialog_rows(dialogs_path)
+    params = load_json(params_path) if params_path else None
 
     sender_counts: dict[str, int] = {}
     recipient_counts: dict[str, int] = {}
@@ -202,10 +242,17 @@ def plot_agent_communication(
     _plot_round_series(axes[1, 0], event_rows)
     _plot_dialog_modes(axes[1, 1], dialog_rows)
 
-    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    footer = _messaging_summary(params)
+    rect_bottom = 0.04 if footer else 0.0
+    if footer:
+        fig.text(0.02, 0.012, footer, ha="left", va="bottom", fontsize=8)
+
+    fig.tight_layout(rect=(0, rect_bottom, 1, 0.95))
     fig.savefig(out_path, dpi=160, bbox_inches="tight")
     print(f"[PLOT] events={events_path}")
     print(f"[PLOT] dialogs={dialogs_path}")
+    if params_path:
+        print(f"[PLOT] params={params_path}")
     print(f"[PLOT] output={out_path}")
     if show:
         plt.show()
@@ -216,6 +263,7 @@ def main() -> None:
     args = _parse_args()
     events_path = resolve_input(args.events, "outputs/events_*.jsonl")
     dialogs_path = resolve_input(args.dialogs, "outputs/*.dialogs.csv")
+    params_path = resolve_optional_run_params(args.params, events_path)
     out_path = ensure_output_path(events_path, args.out, suffix="communication")
     plot_agent_communication(
         events_path=events_path,
@@ -223,6 +271,7 @@ def main() -> None:
         out_path=out_path,
         show=args.show,
         top_n=args.top_n,
+        params_path=params_path,
     )
 
 

@@ -1,6 +1,6 @@
 """Unit tests for scripts.plot_run_metrics."""
 
-from scripts.plot_run_metrics import _kpi_specs, _plot_kpi_grid
+from scripts.plot_run_metrics import _briefing_summary, _kpi_specs, _plot_kpi_grid
 
 
 class TestKpiSpecs:
@@ -95,3 +95,30 @@ class TestPlotMetricsDashboard:
             "Seconds",
         ]
         assert all(ax.ylim is not None for ax in fig.axes)
+
+
+class TestBriefingSummary:
+    def test_formats_driver_briefing_thresholds(self):
+        summary = _briefing_summary(
+            {
+                "driver_briefing_thresholds": {
+                    "margin_very_close_m": 100.0,
+                    "margin_near_m": 300.0,
+                    "margin_buffered_m": 700.0,
+                    "risk_density_low": 0.12,
+                    "risk_density_medium": 0.35,
+                    "risk_density_high": 0.70,
+                    "delay_fast_ratio": 1.1,
+                    "delay_moderate_ratio": 1.3,
+                    "delay_heavy_ratio": 1.6,
+                    "caution_min_margin_m": 100.0,
+                    "recommended_min_margin_m": 300.0,
+                }
+            }
+        )
+        assert summary is not None
+        assert "Briefing thresholds:" in summary
+        assert "margin_m=100.0/300.0/700.0" in summary
+
+    def test_returns_none_without_briefing_payload(self):
+        assert _briefing_summary({}) is None
