@@ -13,6 +13,7 @@ except ModuleNotFoundError:
 
 
 def _parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for the run-metrics dashboard."""
     parser = argparse.ArgumentParser(
         description="Visualize one run_metrics_*.json file as a 2x2 dashboard."
     )
@@ -39,6 +40,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _draw_or_empty(ax, items: list[tuple[str, float]], title: str, ylabel: str, color: str, *, highest_first: bool = True):
+    """Draw a bar panel, or a centered placeholder if no rows are available."""
     if not items:
         ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=11)
         ax.set_title(title)
@@ -56,49 +58,99 @@ def _draw_or_empty(ax, items: list[tuple[str, float]], title: str, ylabel: str, 
     ax.set_ylabel(ylabel)
 
 
+def _kpi_specs(metrics: dict) -> list[dict[str, object]]:
+    """Build the four top-level KPI descriptors used in the dashboard header panel."""
+    return [
+        {
+            "title": "Departure variance",
+            "value": float(metrics.get("departure_time_variability", 0.0)),
+            "ylabel": "Seconds^2",
+            "color": "#4C78A8",
+            "fmt": "{:.3f}",
+        },
+        {
+            "title": "Route entropy",
+            "value": float(metrics.get("route_choice_entropy", 0.0)),
+            "ylabel": "Entropy (nats)",
+            "color": "#F58518",
+            "fmt": "{:.3f}",
+        },
+        {
+            "title": "Hazard exposure",
+            "value": float(metrics.get("average_hazard_exposure", {}).get("global_average", 0.0)),
+            "ylabel": "Average risk score",
+            "color": "#E45756",
+            "fmt": "{:.3f}",
+        },
+        {
+            "title": "Avg travel time",
+            "value": float(metrics.get("average_travel_time", {}).get("average", 0.0)),
+            "ylabel": "Seconds",
+            "color": "#54A24B",
+            "fmt": "{:.2f}",
+        },
+    ]
+
+
+def _plot_kpi_grid(fig, slot, metrics: dict) -> None:
+    """Render the KPI summary as four mini subplots with independent y scales."""
+    kpi_grid = slot.subgridspec(2, 2, wspace=0.35, hspace=0.45)
+    for idx, spec in enumerate(_kpi_specs(metrics)):
+        ax = fig.add_subplot(kpi_grid[idx // 2, idx % 2])
+        value = float(spec["value"])
+        ymax = max(1.0, value * 1.15) if value >= 0.0 else max(1.0, abs(value) * 1.15)
+        ax.bar([0], [value], color=str(spec["color"]), width=0.5)
+        ax.set_title(str(spec["title"]), fontsize=10)
+        ax.set_ylabel(str(spec["ylabel"]), fontsize=9)
+        ax.set_xticks([])
+        ax.set_ylim(min(0.0, value * 1.1), ymax)
+        ax.grid(axis="y", linestyle=":", alpha=0.35)
+        label = str(spec["fmt"]).format(value)
+        text_y = value if value > 0.0 else ymax * 0.04
+        va = "bottom"
+        if value < 0.0:
+            text_y = value
+            va = "top"
+        ax.text(0, text_y, label, ha="center", va=va, fontsize=10)
+
+
 def plot_metrics_dashboard(metrics_path: Path, *, out_path: Path, show: bool, top_n: int) -> None:
+    """Render the run-metrics dashboard and save it to ``out_path``."""
     plt = require_matplotlib()
     metrics = load_json(metrics_path)
-
-    kpis = {
-        "Departure variance": float(metrics.get("departure_time_variability", 0.0)),
-        "Route entropy": float(metrics.get("route_choice_entropy", 0.0)),
-        "Hazard exposure": float(metrics.get("average_hazard_exposure", {}).get("global_average", 0.0)),
-        "Avg travel time": float(metrics.get("average_travel_time", {}).get("average", 0.0)),
-    }
     exposure = metrics.get("average_hazard_exposure", {}).get("per_agent_average", {}) or {}
     travel = metrics.get("average_travel_time", {}).get("per_agent", {}) or {}
     instability = metrics.get("decision_instability", {}).get("per_agent_changes", {}) or {}
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig = plt.figure(figsize=(14, 10))
+    grid = fig.add_gridspec(2, 2, wspace=0.28, hspace=0.3)
     fig.suptitle(
         f"AgentEvac Run Metrics\n{metrics_path.name} | mode={metrics.get('run_mode', 'unknown')} "
         f"| departed={metrics.get('departed_agents', 0)} | arrived={metrics.get('arrived_agents', 0)}",
         fontsize=14,
     )
 
-    axes[0, 0].bar(range(len(kpis)), list(kpis.values()), color=["#4C78A8", "#F58518", "#E45756", "#54A24B"])
-    axes[0, 0].set_xticks(range(len(kpis)))
-    axes[0, 0].set_xticklabels(list(kpis.keys()), rotation=20, ha="right")
-    axes[0, 0].set_title("Run KPI Summary")
-    axes[0, 0].set_ylabel("Value")
+    _plot_kpi_grid(fig, grid[0, 0], metrics)
+    ax_travel = fig.add_subplot(grid[0, 1])
+    ax_exposure = fig.add_subplot(grid[1, 0])
+    ax_instability = fig.add_subplot(grid[1, 1])
 
     _draw_or_empty(
-        axes[0, 1],
+        ax_travel,
         top_items(travel, top_n),
         f"Per-Agent Travel Time (top {top_n})",
         "Seconds",
         "#4C78A8",
     )
     _draw_or_empty(
-        axes[1, 0],
+        ax_exposure,
         top_items(exposure, top_n),
         f"Per-Agent Hazard Exposure (top {top_n})",
         "Average Risk Score",
         "#E45756",
     )
     _draw_or_empty(
-        axes[1, 1],
+        ax_instability,
         top_items({k: float(v) for k, v in instability.items()}, top_n),
         f"Per-Agent Decision Instability (top {top_n})",
         "Choice Changes",
@@ -115,6 +167,7 @@ def plot_metrics_dashboard(metrics_path: Path, *, out_path: Path, show: bool, to
 
 
 def main() -> None:
+    """CLI entry point for the run-metrics dashboard."""
     args = _parse_args()
     metrics_path = resolve_input(args.metrics, "outputs/run_metrics_*.json")
     out_path = ensure_output_path(metrics_path, args.out, suffix="dashboard")
