@@ -132,6 +132,15 @@ python3 scripts/plot_agent_communication.py \
   --events outputs/events_20260309_030340.jsonl \
   --dialogs outputs/llm_routes_20260309_030340.dialogs.csv
 
+# One-row-per-agent round timeline with departure, arrival, and route-change highlights
+python3 scripts/plot_agent_round_timeline.py --run-id 20260309_030340
+
+# Or pass explicit files
+python3 scripts/plot_agent_round_timeline.py \
+  --events outputs/events_20260309_030340.jsonl \
+  --replay outputs/llm_routes_20260309_030340.jsonl \
+  --metrics outputs/run_metrics_20260309_030340.json
+
 # Compare multiple completed runs or sweep outputs
 python3 scripts/plot_experiment_comparison.py \
   --results-json outputs/experiments/experiment_results.json

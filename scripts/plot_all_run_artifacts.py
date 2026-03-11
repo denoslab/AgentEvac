@@ -10,12 +10,14 @@ from pathlib import Path
 try:
     from scripts._plot_common import newest_file
     from scripts.plot_agent_communication import plot_agent_communication
+    from scripts.plot_agent_round_timeline import plot_agent_round_timeline
     from scripts.plot_departure_timeline import plot_timeline
     from scripts.plot_experiment_comparison import load_cases, plot_experiment_comparison
     from scripts.plot_run_metrics import plot_metrics_dashboard
 except ModuleNotFoundError:
     from _plot_common import newest_file
     from plot_agent_communication import plot_agent_communication
+    from plot_agent_round_timeline import plot_agent_round_timeline
     from plot_departure_timeline import plot_timeline
     from plot_experiment_comparison import load_cases, plot_experiment_comparison
     from plot_run_metrics import plot_metrics_dashboard
@@ -129,6 +131,15 @@ def main() -> None:
         show=args.show,
         top_n=args.top_n,
     )
+    if replay_path is not None:
+        plot_agent_round_timeline(
+            events_path=events_path,
+            replay_path=replay_path,
+            metrics_path=metrics_path,
+            out_path=out_dir / "agent_round_timeline.png",
+            show=args.show,
+            include_no_departure=False,
+        )
     comparison_source: Path | None = None
     if args.results_json:
         results_path = Path(args.results_json)
