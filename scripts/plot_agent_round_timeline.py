@@ -14,6 +14,7 @@ except ModuleNotFoundError:
 
 
 def _parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for the round-timeline plot."""
     parser = argparse.ArgumentParser(
         description="Plot one row per agent from departure round to arrival round, "
                     "with route-change rounds highlighted."
@@ -52,6 +53,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _round_table(event_rows: list[dict[str, Any]]) -> list[tuple[int, float]]:
+    """Extract and sort the `(round, sim_t_s)` table from event rows."""
     rounds = []
     for rec in event_rows:
         if rec.get("event") != "decision_round_start":
@@ -77,6 +79,7 @@ def _round_for_time(t: float, rounds: list[tuple[int, float]]) -> int:
 
 
 def _departure_times(event_rows: list[dict[str, Any]]) -> dict[str, float]:
+    """Collect the first recorded departure time for each agent."""
     out: dict[str, float] = {}
     for rec in event_rows:
         if rec.get("event") != "departure_release":
@@ -90,6 +93,7 @@ def _departure_times(event_rows: list[dict[str, Any]]) -> dict[str, float]:
 
 
 def _route_change_times(replay_rows: list[dict[str, Any]]) -> dict[str, list[float]]:
+    """Collect route-change timestamps per agent from the replay log."""
     out: dict[str, list[float]] = {}
     for rec in replay_rows:
         if rec.get("event") != "route_change":
@@ -111,6 +115,12 @@ def _timeline_rows(
     *,
     include_no_departure: bool,
 ) -> tuple[list[dict[str, Any]], int]:
+    """Build per-agent timeline rows from departures, travel times, and route changes.
+
+    Returns:
+        A tuple `(rows, final_round)` where `rows` contains one dict per agent with
+        `start_round`, `end_round`, `change_rounds`, and a `status` label.
+    """
     rounds = _round_table(event_rows)
     final_round = rounds[-1][0]
     departures = _departure_times(event_rows)
@@ -166,6 +176,7 @@ def plot_agent_round_timeline(
     show: bool,
     include_no_departure: bool,
 ) -> None:
+    """Render the round-based agent timeline figure and save it to disk."""
     plt = require_matplotlib()
     from matplotlib.patches import Patch
 
@@ -252,6 +263,7 @@ def plot_agent_round_timeline(
 
 
 def main() -> None:
+    """CLI entry point for generating the round-timeline plot."""
     args = _parse_args()
     if args.run_id:
         run_id = str(args.run_id)
