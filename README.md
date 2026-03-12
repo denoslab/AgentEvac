@@ -95,3 +95,38 @@ agentevac-study \
 ```
 
 This runs a grid search over information noise, delay, and trust parameters and fits results against a reference metrics file.
+
+## Experiment Workflow
+
+The repository includes ready-to-run shell scripts for a staged research workflow:
+
+```bash
+# 1. Pilot sanity check across the three scenarios, messaging on/off
+bash scripts/run_stage0_pilot.sh
+
+# 2. Main scenario comparison with moderate uncertainty
+bash scripts/run_stage1_scenarios.sh
+
+# 3. Uncertainty sensitivity (sigma × delay)
+bash scripts/run_stage2_uncertainty.sh
+
+# 4. Trust × messaging interaction study
+bash scripts/run_stage3_trust_messaging.sh
+
+# 5. Coarse calibration against a reference metrics file
+bash scripts/run_stage4_calibration.sh outputs/reference_metrics.json
+
+# 6. Local refinement around the best calibration region
+bash scripts/run_stage5_refine_calibration.sh
+```
+
+Stage purpose summary:
+
+- `run_stage0_pilot.sh`: quick behavioral sanity check before expensive sweeps
+- `run_stage1_scenarios.sh`: compare `no_notice`, `alert_guided`, `advice_guided`
+- `run_stage2_uncertainty.sh`: study `INFO_SIGMA` and `INFO_DELAY_S`
+- `run_stage3_trust_messaging.sh`: test interaction between trust and communication
+- `run_stage4_calibration.sh`: rank parameter sets against a reference outcome
+- `run_stage5_refine_calibration.sh`: refine around promising calibrated regions
+
+All scripts run headless with `sumo` and write outputs under `outputs/stage*/`.
