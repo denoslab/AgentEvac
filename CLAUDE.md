@@ -50,7 +50,7 @@ python -m pytest tests/
 
 **Key CLI flags for the simulation:** `--scenario` (no_notice|alert_guided|advice_guided), `--messaging` (on|off), `--events` (on|off), `--web-dashboard` (on|off), `--metrics` (on|off), `--overlays` (on|off).
 
-**Key environment variables:** `OPENAI_MODEL` (default: `gpt-4o-mini`), `DECISION_PERIOD_S` (default: `5.0`), `NET_FILE` (default: `sumo/Repaired.rou.xml`), `SUMO_CFG` (default: `sumo/Repaired.sumocfg`), `RUN_MODE`, `REPLAY_LOG_PATH`, `EVENTS_LOG_PATH`, `METRICS_LOG_PATH`.
+**Key environment variables:** `OPENAI_MODEL` (default: `gpt-4o-mini`), `DECISION_PERIOD_S` (default: `5.0`), `NET_FILE` (default: `sumo/Repaired.net.xml`), `SUMO_CFG` (default: `sumo/Repaired.sumocfg`), `RUN_MODE`, `REPLAY_LOG_PATH`, `EVENTS_LOG_PATH`, `METRICS_LOG_PATH`.
 
 ## Architecture
 
@@ -80,7 +80,7 @@ python -m pytest tests/
 
 At the top of the file (labeled `USER CONFIG`):
 - `CONTROL_MODE` — `"destination"` (default) or `"route"`
-- `NET_FILE` — path to SUMO route/network file (overridable via `NET_FILE` env var; default: `sumo/Repaired.rou.xml`)
+- `NET_FILE` — path to SUMO route/network file (overridable via `NET_FILE` env var; default: `sumo/Repaired.net.xml`)
 - `DESTINATION_LIBRARY` / `ROUTE_LIBRARY` — hardcoded choice menus for agents
 - `OPENAI_MODEL` / `DECISION_PERIOD_S` — overridable via env vars
 

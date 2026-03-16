@@ -3,6 +3,7 @@
 import pytest
 
 from agentevac.agents.routing_utility import (
+    _observation_based_exposure,
     annotate_menu_with_expected_utility,
     score_destination_utility,
     score_route_utility,
@@ -172,3 +173,116 @@ class TestAnnotateMenuWithExpectedUtility:
             psychology=_psychology(confidence=0.1), profile=_profile()
         )
         assert menu[0]["expected_utility"] > menu[1]["expected_utility"]
+
+
+class TestObservationBasedExposure:
+    """Tests for the no_notice exposure function that uses only belief + route length."""
+
+    def test_zero_danger_gives_low_exposure(self):
+        item = {"len_edges": 5}
+        belief = {"p_safe": 0.9, "p_risky": 0.05, "p_danger": 0.05}
+        psych = {"perceived_risk": 0.05, "confidence": 0.8}
+        exposure = _observation_based_exposure(item, belief, psych)
+        assert exposure < 1.0
+
+    def test_high_danger_gives_high_exposure(self):
+        item = {"len_edges": 5}
+        belief = {"p_safe": 0.05, "p_risky": 0.05, "p_danger": 0.9}
+        psych = {"perceived_risk": 0.8, "confidence": 0.1}
+        exposure = _observation_based_exposure(item, belief, psych)
+        assert exposure > 1.0
+
+    def test_longer_route_gives_more_exposure(self):
+        belief = {"p_safe": 0.1, "p_risky": 0.3, "p_danger": 0.6}
+        psych = {"perceived_risk": 0.5, "confidence": 0.5}
+        short = _observation_based_exposure({"len_edges": 3}, belief, psych)
+        long = _observation_based_exposure({"len_edges": 15}, belief, psych)
+        assert long > short
+
+    def test_same_length_same_belief_gives_same_exposure(self):
+        belief = _neutral_belief()
+        psych = _psychology()
+        e1 = _observation_based_exposure({"len_edges": 5}, belief, psych)
+        e2 = _observation_based_exposure({"len_edges": 5}, belief, psych)
+        assert e1 == pytest.approx(e2)
+
+    def test_low_confidence_adds_uncertainty_penalty(self):
+        item = {"len_edges": 5}
+        belief = _neutral_belief()
+        confident = _observation_based_exposure(item, belief, _psychology(confidence=0.9))
+        uncertain = _observation_based_exposure(item, belief, _psychology(confidence=0.1))
+        assert uncertain > confident
+
+    def test_uses_len_edges_fastest_path_fallback(self):
+        belief = _neutral_belief()
+        psych = _psychology()
+        item_a = {"len_edges": 10}
+        item_b = {"len_edges_fastest_path": 10}
+        assert _observation_based_exposure(item_a, belief, psych) == pytest.approx(
+            _observation_based_exposure(item_b, belief, psych)
+        )
+
+
+class TestAnnotateMenuScenarioParam:
+    """Tests that the scenario parameter selects the correct exposure function."""
+
+    def _make_menu(self):
+        return [
+            {
+                "idx": 0, "name": "s0", "reachable": True,
+                "risk_sum": 3.0, "blocked_edges": 1, "min_margin_m": 50.0,
+                "travel_time_s_fastest_path": 300.0, "len_edges_fastest_path": 8,
+            },
+        ]
+
+    def test_no_notice_uses_observation_based_exposure(self):
+        menu = self._make_menu()
+        annotate_menu_with_expected_utility(
+            menu, mode="destination", belief=_neutral_belief(),
+            psychology=_psychology(), profile=_profile(), scenario="no_notice",
+        )
+        # Observation-based exposure ignores risk_sum and blocked_edges,
+        # so it should be much lower than route-specific exposure.
+        obs_exposure = menu[0]["utility_components"]["expected_exposure"]
+
+        menu2 = self._make_menu()
+        annotate_menu_with_expected_utility(
+            menu2, mode="destination", belief=_neutral_belief(),
+            psychology=_psychology(), profile=_profile(), scenario="advice_guided",
+        )
+        full_exposure = menu2[0]["utility_components"]["expected_exposure"]
+        # Route with blocked_edges=1 and risk_sum=3.0 should have much higher
+        # full exposure than belief-only exposure.
+        assert full_exposure > obs_exposure
+
+    def test_advice_guided_uses_route_specific_exposure(self):
+        menu = self._make_menu()
+        annotate_menu_with_expected_utility(
+            menu, mode="destination", belief=_neutral_belief(),
+            psychology=_psychology(), profile=_profile(), scenario="advice_guided",
+        )
+        # With blocked_edges=1, the exposure should include the 8.0 penalty.
+        assert menu[0]["utility_components"]["expected_exposure"] > 8.0
+
+    def test_alert_guided_uses_route_specific_exposure(self):
+        menu = self._make_menu()
+        annotate_menu_with_expected_utility(
+            menu, mode="destination", belief=_neutral_belief(),
+            psychology=_psychology(), profile=_profile(), scenario="alert_guided",
+        )
+        assert menu[0]["utility_components"]["expected_exposure"] > 8.0
+
+    def test_default_scenario_is_advice_guided(self):
+        menu_default = self._make_menu()
+        menu_explicit = self._make_menu()
+        annotate_menu_with_expected_utility(
+            menu_default, mode="destination", belief=_neutral_belief(),
+            psychology=_psychology(), profile=_profile(),
+        )
+        annotate_menu_with_expected_utility(
+            menu_explicit, mode="destination", belief=_neutral_belief(),
+            psychology=_psychology(), profile=_profile(), scenario="advice_guided",
+        )
+        assert menu_default[0]["expected_utility"] == pytest.approx(
+            menu_explicit[0]["expected_utility"]
+        )

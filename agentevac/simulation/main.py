@@ -123,7 +123,7 @@ from sumolib import geomhelper
 CONTROL_MODE = "destination"
 
 # Your SUMO net file used by the .sumocfg (needed for edge geometry)
-NET_FILE = os.getenv("NET_FILE", "sumo/Repaired.rou.xml")  # override via NET_FILE env var
+NET_FILE = os.getenv("NET_FILE", "sumo/Repaired.net.xml")  # override via NET_FILE env var
 
 # OpenAI model + decision cadence
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -3255,17 +3255,28 @@ def process_vehicles(step_idx: int):
                     belief=belief_state,
                     psychology=agent_state.psychology,
                     profile=agent_state.profile,
+                    scenario=SCENARIO_MODE,
                 )
                 prompt_destination_menu = filter_menu_for_scenario(
                     SCENARIO_MODE,
                     menu,
                     control_mode="destination",
                 )
-                utility_policy = (
-                    "Use expected_utility as the main safety-efficiency tradeoff score; higher is better. "
-                    if SCENARIO_CONFIG["expected_utility_visible"]
-                    else "Do not assume a precomputed utility score is available in this scenario. "
-                )
+                _utility_basis = {
+                    "no_notice": (
+                        "expected_utility is available for all options; higher (less negative) is better. "
+                        "Scores reflect your general hazard perception and route length — "
+                        "you have no route-specific fire data. "
+                    ),
+                    "alert_guided": (
+                        "expected_utility is available for all options; higher (less negative) is better. "
+                        "Scores incorporate current fire positions along each route. "
+                    ),
+                    "advice_guided": (
+                        "Use expected_utility as the main safety-efficiency tradeoff score; higher is better. "
+                    ),
+                }
+                utility_policy = _utility_basis.get(SCENARIO_MODE, _utility_basis["advice_guided"])
                 guidance_policy = (
                     "Prefer options with advisory='Recommended' and clear briefing reasons. "
                     "If advisory is not available, prefer lower risk_sum and larger min_margin. "
@@ -3648,17 +3659,28 @@ def process_vehicles(step_idx: int):
                     belief=belief_state,
                     psychology=agent_state.psychology,
                     profile=agent_state.profile,
+                    scenario=SCENARIO_MODE,
                 )
                 prompt_route_menu = filter_menu_for_scenario(
                     SCENARIO_MODE,
                     menu,
                     control_mode="route",
                 )
-                utility_policy = (
-                    "Use expected_utility as the main safety-efficiency tradeoff score; higher is better. "
-                    if SCENARIO_CONFIG["expected_utility_visible"]
-                    else "Do not assume a precomputed utility score is available in this scenario. "
-                )
+                _rt_utility_basis = {
+                    "no_notice": (
+                        "expected_utility is available for all options; higher (less negative) is better. "
+                        "Scores reflect your general hazard perception and route length — "
+                        "you have no route-specific fire data. "
+                    ),
+                    "alert_guided": (
+                        "expected_utility is available for all options; higher (less negative) is better. "
+                        "Scores incorporate current fire positions along each route. "
+                    ),
+                    "advice_guided": (
+                        "Use expected_utility as the main safety-efficiency tradeoff score; higher is better. "
+                    ),
+                }
+                utility_policy = _rt_utility_basis.get(SCENARIO_MODE, _rt_utility_basis["advice_guided"])
                 guidance_policy = (
                     "Use advisory/briefing/reasons to explain route quality in human language. "
                     if SCENARIO_CONFIG["official_route_guidance_visible"]
@@ -4104,27 +4126,29 @@ try:
                 )
         active_vehicle_ids = list(traci.vehicle.getIDList())
         _refresh_active_agent_live_status(sim_t, active_vehicle_ids)
-        fires = active_fires(sim_t)
-        fire_geom = [(float(item["x"]), float(item["y"]), float(item["r"])) for item in fires]
-        for vid in active_vehicle_ids:
-            try:
-                roadid = traci.vehicle.getRoadID(vid)
-                if not roadid or roadid.startswith(":"):
-                    continue
-                _, risk_score, margin_m = compute_edge_risk_for_fires(roadid, fire_geom)
-                metrics.record_exposure_sample(
-                    agent_id=vid,
-                    sim_t_s=sim_t,
-                    current_edge=roadid,
-                    current_margin_m=_round_or_none(margin_m, 2),
-                    risk_score=risk_score,
-                )
-            except traci.TraCIException:
-                continue
         metrics.observe_active_vehicles(active_vehicle_ids, sim_t)
         delta_t = traci.simulation.getDeltaT()
         decision_period_steps = max(1, int(round(DECISION_PERIOD_S / max(1e-9, delta_t))))
         if step_idx % decision_period_steps == 0:
+            # Record exposure once per decision round (not every step) to avoid
+            # diluting the average with many low-risk samples between rounds.
+            fires = active_fires(sim_t)
+            fire_geom = [(float(item["x"]), float(item["y"]), float(item["r"])) for item in fires]
+            for vid in active_vehicle_ids:
+                try:
+                    roadid = traci.vehicle.getRoadID(vid)
+                    if not roadid or roadid.startswith(":"):
+                        continue
+                    _, risk_score, margin_m = compute_edge_risk_for_fires(roadid, fire_geom)
+                    metrics.record_exposure_sample(
+                        agent_id=vid,
+                        sim_t_s=sim_t,
+                        current_edge=roadid,
+                        current_margin_m=_round_or_none(margin_m, 2),
+                        risk_score=risk_score,
+                    )
+                except traci.TraCIException:
+                    continue
             replay.record_metric_snapshot(
                 step=step_idx,
                 sim_t_s=sim_t,

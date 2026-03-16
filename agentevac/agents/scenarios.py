@@ -5,8 +5,9 @@ much official hazard information agents receive each decision round:
 
     **no_notice** — No official warning exists yet.
         Agents rely solely on their own noisy margin observations and natural-language
-        messages from neighbours.  Menu items contain only minimal fields (name,
-        reachability).  This represents the typical onset of a rapidly spreading wildfire
+        messages from neighbours.  Menu items include route identity, travel time, and
+        an observation-based utility score (local road knowledge), but no fire-specific
+        risk metrics.  This represents the typical onset of a rapidly spreading wildfire
         before emergency services have issued formal guidance.
 
     **alert_guided** — Official alerts broadcast general hazard information.
@@ -68,7 +69,7 @@ def load_scenario_config(mode: str) -> Dict[str, Any]:
             "forecast_visible": False,
             "route_head_forecast_visible": False,
             "official_route_guidance_visible": False,
-            "expected_utility_visible": False,
+            "expected_utility_visible": True,
             "neighborhood_observation_visible": True,
         }
     if name == "alert_guided":
@@ -81,7 +82,7 @@ def load_scenario_config(mode: str) -> Dict[str, Any]:
             "forecast_visible": True,
             "route_head_forecast_visible": False,
             "official_route_guidance_visible": False,
-            "expected_utility_visible": False,
+            "expected_utility_visible": True,
             "neighborhood_observation_visible": True,
         }
     return {
@@ -199,17 +200,21 @@ def filter_menu_for_scenario(
             out.pop("briefing", None)
             out.pop("reasons", None)
 
-        if not cfg["expected_utility_visible"]:
-            # Remove pre-computed utility scores so agents cannot use them as a shortcut.
-            out.pop("expected_utility", None)
-            out.pop("utility_components", None)
-
         if cfg["mode"] == "no_notice":
-            # Reduce to the bare minimum an agent could reasonably know without warnings.
+            # Keep fields an agent could plausibly know from local familiarity:
+            # route identity, reachability, travel time/length (local knowledge),
+            # and observation-based utility scores.
             if control_mode == "destination":
-                keep_keys = {"idx", "name", "dest_edge", "reachable", "note"}
+                keep_keys = {
+                    "idx", "name", "dest_edge", "reachable", "note",
+                    "travel_time_s_fastest_path", "len_edges_fastest_path",
+                    "expected_utility", "utility_components",
+                }
             else:
-                keep_keys = {"idx", "name", "len_edges"}
+                keep_keys = {
+                    "idx", "name", "len_edges",
+                    "expected_utility", "utility_components",
+                }
             out = {k: v for k, v in out.items() if k in keep_keys}
 
         prompt_menu.append(out)

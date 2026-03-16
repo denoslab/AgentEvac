@@ -16,14 +16,14 @@ class TestLoadScenarioConfig:
         cfg = load_scenario_config("no_notice")
         assert cfg["mode"] == "no_notice"
         assert cfg["forecast_visible"] is False
-        assert cfg["expected_utility_visible"] is False
+        assert cfg["expected_utility_visible"] is True
 
     def test_alert_guided_mode(self):
         cfg = load_scenario_config("alert_guided")
         assert cfg["mode"] == "alert_guided"
         assert cfg["forecast_visible"] is True
         assert cfg["route_head_forecast_visible"] is False
-        assert cfg["expected_utility_visible"] is False
+        assert cfg["expected_utility_visible"] is True
 
     def test_advice_guided_mode(self):
         cfg = load_scenario_config("advice_guided")
@@ -139,11 +139,11 @@ class TestFilterMenuForScenario:
         assert "briefing" not in result[0]
         assert "reasons" not in result[0]
 
-    def test_alert_guided_removes_expected_utility(self):
+    def test_alert_guided_retains_expected_utility(self):
         menu = self._full_menu()
         result = filter_menu_for_scenario("alert_guided", menu, control_mode="destination")
-        assert "expected_utility" not in result[0]
-        assert "utility_components" not in result[0]
+        assert "expected_utility" in result[0]
+        assert "utility_components" in result[0]
 
     def test_alert_guided_retains_risk_fields(self):
         menu = self._full_menu()
@@ -151,18 +151,31 @@ class TestFilterMenuForScenario:
         assert "risk_sum" in result[0]
         assert "blocked_edges" in result[0]
 
-    def test_no_notice_destination_reduces_to_minimal_keys(self):
+    def test_no_notice_destination_keeps_local_knowledge_and_utility(self):
         menu = self._full_menu()
+        menu[0]["travel_time_s_fastest_path"] = 300.0
+        menu[0]["len_edges_fastest_path"] = 8
         result = filter_menu_for_scenario("no_notice", menu, control_mode="destination")
-        allowed = {"idx", "name", "dest_edge", "reachable", "note"}
+        allowed = {
+            "idx", "name", "dest_edge", "reachable", "note",
+            "travel_time_s_fastest_path", "len_edges_fastest_path",
+            "expected_utility", "utility_components",
+        }
         assert set(result[0].keys()).issubset(allowed)
         assert "risk_sum" not in result[0]
+        assert "expected_utility" in result[0]
+        assert "travel_time_s_fastest_path" in result[0]
 
-    def test_no_notice_route_mode_reduces_to_minimal_keys(self):
-        menu = [{"idx": 0, "name": "r0", "len_edges": 5, "risk_sum": 2.0}]
+    def test_no_notice_route_mode_keeps_utility_and_length(self):
+        menu = [{
+            "idx": 0, "name": "r0", "len_edges": 5, "risk_sum": 2.0,
+            "expected_utility": -0.3, "utility_components": {"expected_exposure": 0.1},
+        }]
         result = filter_menu_for_scenario("no_notice", menu, control_mode="route")
         assert "risk_sum" not in result[0]
         assert "len_edges" in result[0]
+        assert "expected_utility" in result[0]
+        assert "utility_components" in result[0]
 
     def test_original_menu_list_not_mutated(self):
         menu = self._full_menu()

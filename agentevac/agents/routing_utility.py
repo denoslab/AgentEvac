@@ -12,7 +12,7 @@ where:
     - ``E(option)`` : expected exposure score (``_expected_exposure``).
     - ``C(option)`` : travel cost in equivalent minutes (``_travel_cost``).
 
-Expected exposure combines four components:
+Expected exposure combines four components (in ``alert_guided`` and ``advice_guided``):
     1. **risk_sum** : Sum of edge-level fire risk scores along the route (or fastest path).
        Scaled by a severity multiplier that increases with ``p_risky`` and ``p_danger``.
     2. **blocked_edges** : Number of edges along the route that are currently inside a
@@ -23,8 +23,14 @@ Expected exposure combines four components:
     4. **uncertainty_penalty** : A penalty proportional to ``(1 - confidence)`` that
        discourages fragile choices when the agent is unsure of the hazard.
 
-Annotated menus (``annotate_menu_with_expected_utility``) are used in the *advice_guided*
-scenario so the LLM receives pre-computed utility context alongside each option.
+In ``no_notice`` mode, agents lack route-specific fire data.  Exposure is instead
+estimated from the agent's general belief state scaled by route length — longer routes
+mean more time exposed to whatever danger the agent perceives.
+
+Annotated menus (``annotate_menu_with_expected_utility``) are computed for all three
+scenarios so the LLM always receives a utility score.  The *precision* of the exposure
+estimate varies by information regime: belief-only (no_notice), current fire state
+(alert_guided), or current fire state with full route-head data (advice_guided).
 """
 
 from typing import Any, Dict, List
@@ -105,6 +111,51 @@ def _travel_cost(menu_item: Dict[str, Any]) -> float:
     if edge_count is None:
         edge_count = menu_item.get("len_edges_fastest_path")
     return _num(edge_count, 0.0) * 0.25
+
+
+def _observation_based_exposure(
+    menu_item: Dict[str, Any],
+    belief: Dict[str, Any],
+    psychology: Dict[str, Any],
+) -> float:
+    """Estimate hazard exposure when route-specific fire data is unavailable.
+
+    Used in the ``no_notice`` scenario where agents have only their own noisy
+    observation of the current edge.  Without per-route fire metrics (risk_sum,
+    blocked_edges, min_margin_m), exposure is derived from the agent's general
+    belief state scaled by route length:
+
+        hazard_level = 0.3 * p_risky + 0.7 * p_danger + 0.4 * perceived_risk
+        length_factor = len_edges * 0.15
+        exposure = hazard_level * length_factor + uncertainty_penalty
+
+    Longer routes are penalised more because a longer route means more time
+    spent driving through a potentially hazardous environment.  The coefficients
+    prioritise ``p_danger`` (0.7) over ``p_risky`` (0.3) to maintain consistency
+    with the severity weighting in ``_expected_exposure``.
+
+    Args:
+        menu_item: A destination or route dict.
+        belief: The agent's current Bayesian belief dict.
+        psychology: The agent's current psychology dict (perceived_risk, confidence).
+
+    Returns:
+        Expected exposure score (>= 0; higher = more hazardous).
+    """
+    p_risky = _num(belief.get("p_risky"), 1.0 / 3.0)
+    p_danger = _num(belief.get("p_danger"), 1.0 / 3.0)
+    perceived_risk = _num(psychology.get("perceived_risk"), p_danger)
+    confidence = _num(psychology.get("confidence"), 0.0)
+
+    hazard_level = 0.3 * p_risky + 0.7 * p_danger + 0.4 * perceived_risk
+    len_edges = _num(
+        menu_item.get("len_edges", menu_item.get("len_edges_fastest_path")),
+        1.0,
+    )
+    length_factor = len_edges * 0.15
+    uncertainty_penalty = max(0.0, 1.0 - confidence) * 0.75
+
+    return hazard_level * length_factor + uncertainty_penalty
 
 
 def _expected_exposure(
@@ -227,14 +278,19 @@ def annotate_menu_with_expected_utility(
     belief: Dict[str, Any],
     psychology: Dict[str, Any],
     profile: Dict[str, Any],
+    scenario: str = "advice_guided",
 ) -> List[Dict[str, Any]]:
     """Annotate each menu option in-place with its expected utility and component breakdown.
 
     For *destination* mode, unreachable options (``reachable=False``) receive
     ``expected_utility=None`` and a minimal component dict to signal their exclusion.
 
-    The annotated menu is later filtered by ``scenarios.filter_menu_for_scenario`` so
-    that utility scores are only visible to agents in the *advice_guided* regime.
+    The ``scenario`` parameter controls which exposure function is used:
+
+    - ``"no_notice"``: ``_observation_based_exposure`` — uses only the agent's belief
+      state and route length (no route-specific fire data).
+    - ``"alert_guided"`` / ``"advice_guided"``: ``_expected_exposure`` — uses route-
+      specific fire metrics (risk_sum, blocked_edges, min_margin_m).
 
     Args:
         menu: List of destination or route dicts (mutated in-place).
@@ -242,6 +298,8 @@ def annotate_menu_with_expected_utility(
         belief: The agent's current Bayesian belief dict.
         psychology: The agent's current psychology dict.
         profile: The agent's profile dict (supplies ``lambda_e``, ``lambda_t``).
+        scenario: Active information regime (``"no_notice"``, ``"alert_guided"``,
+            or ``"advice_guided"``).  Controls which exposure function is used.
 
     Returns:
         The same ``menu`` list, with each item updated to include:
@@ -249,6 +307,9 @@ def annotate_menu_with_expected_utility(
             - ``utility_components``: Dict with lambda_e, lambda_t, expected_exposure,
                                       travel_cost (and ``reachable=False`` if unreachable).
     """
+    use_observation_exposure = str(scenario).strip().lower() == "no_notice"
+    exposure_fn = _observation_based_exposure if use_observation_exposure else _expected_exposure
+
     for item in menu:
         if mode == "destination":
             if not item.get("reachable", False):
@@ -260,18 +321,17 @@ def annotate_menu_with_expected_utility(
                     "reachable": False,
                 }
                 continue
-            expected_exposure = _expected_exposure(item, belief, psychology)
-            travel_cost = _travel_cost(item)
-            utility = score_destination_utility(item, belief, psychology, profile)
-        else:
-            expected_exposure = _expected_exposure(item, belief, psychology)
-            travel_cost = _travel_cost(item)
-            utility = score_route_utility(item, belief, psychology, profile)
+
+        lambda_e = max(0.0, _num(profile.get("lambda_e"), 1.0))
+        lambda_t = max(0.0, _num(profile.get("lambda_t"), 0.1))
+        expected_exposure = exposure_fn(item, belief, psychology)
+        travel_cost = _travel_cost(item)
+        utility = -((lambda_e * expected_exposure) + (lambda_t * travel_cost))
 
         item["expected_utility"] = round(utility, 4)
         item["utility_components"] = {
-            "lambda_e": round(max(0.0, _num(profile.get("lambda_e"), 1.0)), 4),
-            "lambda_t": round(max(0.0, _num(profile.get("lambda_t"), 0.1)), 4),
+            "lambda_e": round(lambda_e, 4),
+            "lambda_t": round(lambda_t, 4),
             "expected_exposure": round(expected_exposure, 4),
             "travel_cost": round(travel_cost, 4),
         }
