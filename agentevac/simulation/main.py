@@ -22,6 +22,7 @@ events and metrics, and optionally serves a live web dashboard.
 **Key environment variables (override defaults without CLI):**
     OPENAI_MODEL       : LLM model ID (default: gpt-4o-mini).
     DECISION_PERIOD_S  : Seconds between LLM decision rounds (default: 5.0).
+    SIM_END_TIME_S     : Max simulation duration in seconds (default: 1200).
     RUN_MODE           : record | replay.
     REPLAY_LOG_PATH    : Path to the JSONL replay log.
     EVENTS_LOG_PATH    : Base path for the event stream JSONL.
@@ -271,6 +272,7 @@ def _parse_cli_args() -> argparse.Namespace:
     parser.add_argument("--delay-heavy-ratio", type=float, help="Max delay ratio for 'heavy delay'.")
     parser.add_argument("--recommended-min-margin-m", type=float, help="Min margin for advisory='Recommended'.")
     parser.add_argument("--caution-min-margin-m", type=float, help="Min margin for advisory='Use with caution'.")
+    parser.add_argument("--sim-end-time", type=float, help="Simulation end time in seconds (default: 1200).")
     return parser.parse_args()
 
 
@@ -434,6 +436,9 @@ RECOMMENDED_MIN_MARGIN_M = _float_from_env_or_cli(
 CAUTION_MIN_MARGIN_M = _float_from_env_or_cli(
     CLI_ARGS.caution_min_margin_m, "CAUTION_MIN_MARGIN_M", 100.0
 )
+SIM_END_TIME_S = _float_from_env_or_cli(
+    CLI_ARGS.sim_end_time, "SIM_END_TIME_S", 1200.0
+)
 
 if not (0.0 <= MARGIN_VERY_CLOSE_M <= MARGIN_NEAR_M <= MARGIN_BUFFERED_M):
     sys.exit(
@@ -521,16 +526,19 @@ if RUN_MODE == "replay" and not os.path.exists(REPLAY_LOG_PATH):
 FIRE_SOURCES = [
     # {"id": "F0", "t0": 0.0,   "x": 9000.0, "y": 9000.0, "r0": 3000.0, "growth_m_per_s": 0.20},
     # {"id": "F0_1", "t0": 0.0,   "x": 9000.0, "y": 27000.0, "r0": 3000.0, "growth_m_per_s": 0.20},
-{"id": "F0", "t0": 0.0,   "x": 22000.0, "y": 9000.0, "r0": 3000.0, "growth_m_per_s": 0.20},
-    {"id": "F0_1", "t0": 0.0,   "x": 24000.0, "y": 6000.0, "r0": 3000.0, "growth_m_per_s": 0.20},
+{"id": "F0", "t0": 0.0,   "x": 22000.0, "y": 9000.0, "r0": 3000.0, "growth_m_per_s": 2.0},
+    {"id": "F0_1", "t0": 0.0, "x": 24000.0, "y": 6000.0, "r0": 3000.0, "growth_m_per_s": 2.0},
+
+
 ]
 NEW_FIRE_EVENTS = [
     # {"id": "F1", "t0": 100.0, "x": 5000.0, "y": 4500.0,  "r0": 2000.0, "growth_m_per_s": 0.30},
     # {"id": "F0_2", "t0": 50.0,   "x": 15000.0, "y": 21000.0, "r0": 3000.0, "growth_m_per_s": 0.20},
     # {"id": "F0_3", "t0": 75.0,   "x": 15000.0, "y": 15000.0, "r0": 3000.0, "growth_m_per_s": 0.20},
-    {"id": "F1", "t0": 25.0, "x": 20000.0, "y": 12000.0,  "r0": 2000.0, "growth_m_per_s": 0.30},
-    {"id": "F0_2", "t0": 30.0,   "x": 18000.0, "y": 14000.0, "r0": 3000.0, "growth_m_per_s": 0.20},
-    {"id": "F0_3", "t0": 45.0,   "x": 15000.0, "y": 18000.0, "r0": 3000.0, "growth_m_per_s": 0.20},
+    {"id": "F1_4", "t0": 90.0, "x": 20000.0, "y": 6000.0, "r0": 3000.0, "growth_m_per_s": 2.0},
+    {"id": "F1", "t0": 150.0, "x": 20000.0, "y": 12000.0,  "r0": 2000.0, "growth_m_per_s": 3.0},
+    {"id": "F1_2", "t0": 210.0,   "x": 18000.0, "y": 14000.0, "r0": 3000.0, "growth_m_per_s": 2.0},
+    {"id": "F1_3", "t0": 270.0,   "x": 15000.0, "y": 18000.0, "r0": 3000.0, "growth_m_per_s": 2.0},
 
 ]
 
@@ -1377,6 +1385,7 @@ def _run_parameter_payload() -> Dict[str, Any]:
     return {
         "run_mode": RUN_MODE,
         "scenario": SCENARIO_MODE,
+        "sim_end_time_s": SIM_END_TIME_S,
         "sumo_binary": SUMO_BINARY,
         "messaging_controls": {
             "enabled": MESSAGING_ENABLED,
@@ -4098,11 +4107,12 @@ def update_fire_shapes(sim_t_s: float):
 
 
 # =========================
-# Step 8: Take simulation steps until there are no more vehicles in the network
+# Step 8: Take simulation steps until sim end time is reached
 # =========================
 step_idx = 0
+print(f"[SIM] Simulation will run until t={SIM_END_TIME_S:.0f}s (--sim-end-time / SIM_END_TIME_S)")
 try:
-    while traci.simulation.getMinExpectedNumber() > 0:
+    while traci.simulation.getTime() < SIM_END_TIME_S:
         traci.simulationStep()
         step_idx += 1
         # --- NEW: visualize fire spread each step (or each decision round if you prefer) ---
