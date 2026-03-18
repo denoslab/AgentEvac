@@ -98,6 +98,7 @@ from agentevac.utils.run_parameters import write_run_parameter_log
 from agentevac.utils.replay import RouteReplay
 
 # ---- OpenAI (LLM control) ----
+from concurrent.futures import ThreadPoolExecutor
 from openai import OpenAI
 from pydantic import BaseModel, Field, conint, create_model
 
@@ -526,8 +527,8 @@ if RUN_MODE == "replay" and not os.path.exists(REPLAY_LOG_PATH):
 FIRE_SOURCES = [
     # {"id": "F0", "t0": 0.0,   "x": 9000.0, "y": 9000.0, "r0": 3000.0, "growth_m_per_s": 0.20},
     # {"id": "F0_1", "t0": 0.0,   "x": 9000.0, "y": 27000.0, "r0": 3000.0, "growth_m_per_s": 0.20},
-{"id": "F0", "t0": 0.0,   "x": 22000.0, "y": 9000.0, "r0": 3000.0, "growth_m_per_s": 2.0},
-    {"id": "F0_1", "t0": 0.0, "x": 24000.0, "y": 6000.0, "r0": 3000.0, "growth_m_per_s": 2.0},
+{"id": "F0", "t0": 0.0,   "x": 22000.0, "y": 9000.0, "r0": 3000.0, "growth_m_per_s": 0.02},
+    {"id": "F0_1", "t0": 0.0, "x": 24000.0, "y": 6000.0, "r0": 3000.0, "growth_m_per_s": 0.02},
 
 
 ]
@@ -535,10 +536,10 @@ NEW_FIRE_EVENTS = [
     # {"id": "F1", "t0": 100.0, "x": 5000.0, "y": 4500.0,  "r0": 2000.0, "growth_m_per_s": 0.30},
     # {"id": "F0_2", "t0": 50.0,   "x": 15000.0, "y": 21000.0, "r0": 3000.0, "growth_m_per_s": 0.20},
     # {"id": "F0_3", "t0": 75.0,   "x": 15000.0, "y": 15000.0, "r0": 3000.0, "growth_m_per_s": 0.20},
-    {"id": "F1_4", "t0": 90.0, "x": 20000.0, "y": 6000.0, "r0": 3000.0, "growth_m_per_s": 2.0},
-    {"id": "F1", "t0": 150.0, "x": 20000.0, "y": 12000.0,  "r0": 2000.0, "growth_m_per_s": 3.0},
-    {"id": "F1_2", "t0": 210.0,   "x": 18000.0, "y": 14000.0, "r0": 3000.0, "growth_m_per_s": 2.0},
-    {"id": "F1_3", "t0": 270.0,   "x": 15000.0, "y": 18000.0, "r0": 3000.0, "growth_m_per_s": 2.0},
+    {"id": "F1_4", "t0": 90.0, "x": 20000.0, "y": 6000.0, "r0": 3000.0, "growth_m_per_s": 0.02},
+    {"id": "F1", "t0": 150.0, "x": 20000.0, "y": 12000.0,  "r0": 2000.0, "growth_m_per_s": 0.02},
+    {"id": "F1_2", "t0": 210.0,   "x": 18000.0, "y": 14000.0, "r0": 3000.0, "growth_m_per_s": 0.02},
+    {"id": "F1_3", "t0": 270.0,   "x": 15000.0, "y": 18000.0, "r0": 3000.0, "growth_m_per_s": 0.02},
 
 ]
 
@@ -1561,6 +1562,7 @@ vehicle_speed = 0
 total_speed = 0
 
 client = OpenAI()  # uses OPENAI_API_KEY
+MAX_CONCURRENT_LLM = int(os.environ.get("MAX_CONCURRENT_LLM", "20"))
 veh_last_choice: Dict[str, int] = {}
 decision_round_counter = 0
 agent_round_history: Dict[str, deque] = {}
@@ -1987,6 +1989,31 @@ def build_driver_briefing(
     }
 
 
+def _decision_input_hash(
+    edge: str,
+    belief: Dict[str, Any],
+    inbox_len: int,
+    margin_m: Optional[float],
+    menu_utilities: Optional[tuple] = None,
+) -> int:
+    """Compute a hash of the key LLM decision inputs for cache-skip detection.
+
+    Rounded values prevent false misses from floating-point noise while still
+    detecting meaningful state changes.
+    """
+    key = (
+        edge,
+        round(float(belief.get("p_danger", 0)), 2),
+        round(float(belief.get("p_safe", 0)), 2),
+        round(float(belief.get("p_risky", 0)), 2),
+        belief.get("uncertainty_bucket"),
+        inbox_len,
+        round(float(margin_m or 0), 0),
+        menu_utilities,
+    )
+    return hash(key)
+
+
 def _round_or_none(value: Optional[float], digits: int = 2) -> Optional[float]:
     if value is None:
         return None
@@ -2349,6 +2376,8 @@ def process_pending_departures(step_idx: int):
         return out
 
     pending_system_observation_updates: List[Tuple[str, Dict[str, Any]]] = []
+    _agent_ctxs: List[Dict[str, Any]] = []
+    _llm_pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_LLM)
 
     for (vid, from_edge, to_edge, t0, dLane, dPos, dSpeed, dColor) in SPAWN_EVENTS:
         if vid in spawned:
@@ -2382,6 +2411,15 @@ def process_pending_departures(step_idx: int):
                 default_social_trigger=DEFAULT_SOCIAL_TRIGGER,
                 default_social_min_danger=DEFAULT_SOCIAL_MIN_DANGER,
             )
+            _agent_ctxs.append({
+                "_mode": "replay",
+                "vid": vid, "from_edge": from_edge, "to_edge": to_edge,
+                "dLane": dLane, "dPos": dPos, "dSpeed": dSpeed, "dColor": dColor,
+                "agent_state": agent_state,
+                "should_release": should_release,
+                "release_reason": release_reason,
+            })
+            continue
         else:
             effective_t0 = 0.0
             if sim_t < effective_t0:
@@ -2545,14 +2583,43 @@ def process_pending_departures(step_idx: int):
                 "Follow the policy strictly."
             )
             predeparture_user_prompt = json.dumps(predeparture_env)
-            llm_action_raw: Optional[str] = None
-            llm_decision_reason: Optional[str] = None
-            llm_predeparture_error: Optional[str] = None
-            predeparture_fallback_reason: Optional[str] = None
-            should_release = heuristic_should_release
-            release_reason = heuristic_reason
-            try:
-                resp = client.responses.parse(
+            # --- Collect context for two-phase parallel LLM dispatch ---
+            _pd_hash = _decision_input_hash(
+                from_edge, belief_state, len(predeparture_inbox),
+                spawn_margin_m,
+            )
+            _ctx: Dict[str, Any] = {
+                "_mode": "live",
+                "vid": vid, "from_edge": from_edge, "to_edge": to_edge,
+                "dLane": dLane, "dPos": dPos, "dSpeed": dSpeed, "dColor": dColor,
+                "agent_state": agent_state,
+                "belief_state": belief_state,
+                "env_signal": env_signal,
+                "social_signal": social_signal,
+                "conflict_info": conflict_info,
+                "edge_forecast": edge_forecast,
+                "route_forecast": route_forecast,
+                "forecast_briefing": forecast_briefing,
+                "predeparture_inbox": predeparture_inbox,
+                "prompt_system_observation_updates": prompt_system_observation_updates,
+                "prompt_neighborhood_observation": prompt_neighborhood_observation,
+                "spawn_margin_m": spawn_margin_m,
+                "predeparture_system_prompt": predeparture_system_prompt,
+                "predeparture_user_prompt": predeparture_user_prompt,
+                "predeparture_env": predeparture_env,
+                "pd_hash": _pd_hash,
+                "heuristic_should_release": heuristic_should_release,
+                "heuristic_reason": heuristic_reason,
+            }
+            if (
+                agent_state.last_input_hash == _pd_hash
+                and agent_state.last_llm_action is not None
+            ):
+                _ctx["_cached"] = True
+            else:
+                _ctx["_cached"] = False
+                _ctx["_future"] = _llm_pool.submit(
+                    client.responses.parse,
                     model=OPENAI_MODEL,
                     input=[
                         {"role": "system", "content": predeparture_system_prompt},
@@ -2560,69 +2627,135 @@ def process_pending_departures(step_idx: int):
                     ],
                     text_format=PreDepartureDecisionModel,
                 )
-                predeparture_decision = resp.output_parsed
-                llm_action_raw = str(getattr(predeparture_decision, "action", "") or "").strip().lower()
-                llm_decision_reason = getattr(predeparture_decision, "reason", None)
+            _agent_ctxs.append(_ctx)
+            continue  # defer processing to Phase 2 below
+
+    # ---- Phase 2: Wait for all LLM futures, then process results ----
+    _llm_pool.shutdown(wait=True)
+
+    for _ctx in _agent_ctxs:
+        vid = _ctx["vid"]
+        from_edge = _ctx["from_edge"]
+        to_edge = _ctx["to_edge"]
+        dLane = _ctx["dLane"]
+        dPos = _ctx["dPos"]
+        dSpeed = _ctx["dSpeed"]
+        dColor = _ctx["dColor"]
+        agent_state = _ctx["agent_state"]
+
+        if _ctx["_mode"] == "replay":
+            should_release = _ctx["should_release"]
+            release_reason = _ctx["release_reason"]
+        else:
+            # Record/live mode: process LLM result
+            belief_state = _ctx["belief_state"]
+            env_signal = _ctx["env_signal"]
+            social_signal = _ctx["social_signal"]
+            predeparture_system_prompt = _ctx["predeparture_system_prompt"]
+            predeparture_user_prompt = _ctx["predeparture_user_prompt"]
+            heuristic_reason = _ctx["heuristic_reason"]
+            predeparture_inbox = _ctx["predeparture_inbox"]
+            prompt_system_observation_updates = _ctx["prompt_system_observation_updates"]
+            prompt_neighborhood_observation = _ctx["prompt_neighborhood_observation"]
+            edge_forecast = _ctx["edge_forecast"]
+            route_forecast = _ctx["route_forecast"]
+            forecast_briefing = _ctx["forecast_briefing"]
+            conflict_info = _ctx["conflict_info"]
+
+            llm_action_raw: Optional[str] = None
+            llm_decision_reason: Optional[str] = None
+            llm_predeparture_error: Optional[str] = None
+            predeparture_fallback_reason: Optional[str] = None
+            should_release = _ctx["heuristic_should_release"]
+            release_reason = _ctx["heuristic_reason"]
+
+            if _ctx["_cached"]:
+                llm_action_raw = agent_state.last_llm_action
+                llm_decision_reason = agent_state.last_llm_reason
                 if llm_action_raw in {"depart", "leave", "depart_now"}:
                     should_release = True
-                    release_reason = "llm_depart"
-                elif llm_action_raw in {"wait", "stay", "hold"}:
-                    should_release = False
-                    release_reason = "llm_wait"
+                    release_reason = "llm_depart_cached"
                 else:
-                    raise ValueError(f"Unsupported predeparture action: {llm_action_raw!r}")
-                llm_conflict_assessment = getattr(predeparture_decision, "conflict_assessment", None)
-                if EVENTS_ENABLED:
-                    events.emit(
-                        "predeparture_llm_decision",
-                        summary=f"{vid} action={llm_action_raw}",
-                        veh_id=vid,
-                        action=llm_action_raw,
-                        reason=llm_decision_reason,
-                        conflict_assessment=llm_conflict_assessment,
-                        round=decision_round_counter,
-                        sim_t_s=sim_t,
-                    )
+                    should_release = False
+                    release_reason = "llm_wait_cached"
                 replay.record_llm_dialog(
-                    step=step_idx,
-                    sim_t_s=sim_t,
-                    veh_id=vid,
-                    control_mode="predeparture",
-                    model=OPENAI_MODEL,
+                    step=step_idx, sim_t_s=sim_t, veh_id=vid,
+                    control_mode="predeparture", model=OPENAI_MODEL,
                     system_prompt=predeparture_system_prompt,
                     user_prompt=predeparture_user_prompt,
-                    response_text=getattr(resp, "output_text", None),
-                    parsed=predeparture_decision.model_dump()
-                    if hasattr(predeparture_decision, "model_dump")
-                    else None,
-                    error=None,
+                    response_text=f"[cached] action={llm_action_raw}",
+                    parsed=None, error=None,
                 )
-            except Exception as e:
-                llm_predeparture_error = str(e)
-                predeparture_fallback_reason = "heuristic_predeparture_fallback"
-                should_release = heuristic_should_release
-                release_reason = heuristic_reason
-                if EVENTS_ENABLED:
-                    events.emit(
-                        "predeparture_llm_error",
-                        summary=f"{vid} error={e}",
+            else:
+                try:
+                    resp = _ctx["_future"].result(timeout=60)
+                    predeparture_decision = resp.output_parsed
+                    llm_action_raw = str(getattr(predeparture_decision, "action", "") or "").strip().lower()
+                    llm_decision_reason = getattr(predeparture_decision, "reason", None)
+                    if llm_action_raw in {"depart", "leave", "depart_now"}:
+                        should_release = True
+                        release_reason = "llm_depart"
+                    elif llm_action_raw in {"wait", "stay", "hold"}:
+                        should_release = False
+                        release_reason = "llm_wait"
+                    else:
+                        raise ValueError(f"Unsupported predeparture action: {llm_action_raw!r}")
+                    llm_conflict_assessment = getattr(predeparture_decision, "conflict_assessment", None)
+                    if EVENTS_ENABLED:
+                        events.emit(
+                            "predeparture_llm_decision",
+                            summary=f"{vid} action={llm_action_raw}",
+                            veh_id=vid,
+                            action=llm_action_raw,
+                            reason=llm_decision_reason,
+                            conflict_assessment=llm_conflict_assessment,
+                            round=decision_round_counter,
+                            sim_t_s=sim_t,
+                        )
+                    replay.record_llm_dialog(
+                        step=step_idx,
+                        sim_t_s=sim_t,
                         veh_id=vid,
+                        control_mode="predeparture",
+                        model=OPENAI_MODEL,
+                        system_prompt=predeparture_system_prompt,
+                        user_prompt=predeparture_user_prompt,
+                        response_text=getattr(resp, "output_text", None),
+                        parsed=predeparture_decision.model_dump()
+                        if hasattr(predeparture_decision, "model_dump")
+                        else None,
+                        error=None,
+                    )
+                except Exception as e:
+                    llm_predeparture_error = str(e)
+                    predeparture_fallback_reason = "heuristic_predeparture_fallback"
+                    should_release = _ctx["heuristic_should_release"]
+                    release_reason = _ctx["heuristic_reason"]
+                    if EVENTS_ENABLED:
+                        events.emit(
+                            "predeparture_llm_error",
+                            summary=f"{vid} error={e}",
+                            veh_id=vid,
+                            error=str(e),
+                            round=decision_round_counter,
+                            sim_t_s=sim_t,
+                        )
+                    replay.record_llm_dialog(
+                        step=step_idx,
+                        sim_t_s=sim_t,
+                        veh_id=vid,
+                        control_mode="predeparture",
+                        model=OPENAI_MODEL,
+                        system_prompt=predeparture_system_prompt,
+                        user_prompt=predeparture_user_prompt,
+                        response_text=None,
+                        parsed=None,
                         error=str(e),
-                        round=decision_round_counter,
-                        sim_t_s=sim_t,
                     )
-                replay.record_llm_dialog(
-                    step=step_idx,
-                    sim_t_s=sim_t,
-                    veh_id=vid,
-                    control_mode="predeparture",
-                    model=OPENAI_MODEL,
-                    system_prompt=predeparture_system_prompt,
-                    user_prompt=predeparture_user_prompt,
-                    response_text=None,
-                    parsed=None,
-                    error=str(e),
-                )
+                agent_state.last_input_hash = _ctx["pd_hash"]
+                agent_state.last_llm_action = llm_action_raw
+                agent_state.last_llm_reason = llm_decision_reason
+
             replay.record_agent_cognition(
                 step=step_idx,
                 sim_t_s=sim_t,
@@ -3405,73 +3538,101 @@ def process_vehicles(step_idx: int):
                 fallback_reason = None
                 llm_error = None
 
-                # LLM decision (Structured Outputs)
-                try:
-                    resp = client.responses.parse(
-                        model=OPENAI_MODEL,
-                        input=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        text_format=DecisionModel,
-                    )
-                    decision = resp.output_parsed
-                    choice_idx = int(decision.choice_index)
+                # --- Input-hash skip: reuse previous LLM decision if inputs unchanged ---
+                _veh_hash = _decision_input_hash(
+                    roadid, belief_state, len(inbox_for_vehicle),
+                    current_edge_margin_m,
+                    menu_utilities=tuple(
+                        round(float(item.get("expected_utility") or 0), 2)
+                        for item in menu
+                    ),
+                )
+                if (
+                    agent_state.last_input_hash == _veh_hash
+                    and agent_state.last_llm_choice_idx is not None
+                ):
+                    choice_idx = agent_state.last_llm_choice_idx
                     raw_choice_idx = choice_idx
-                    decision_reason = getattr(decision, "reason", None)
-                    decision_conflict_assessment = getattr(decision, "conflict_assessment", None)
-                    outbox_count = len(getattr(decision, "outbox", None) or [])
-                    messaging.queue_outbox(vehicle, getattr(decision, "outbox", None))
-                    if EVENTS_ENABLED:
-                        events.emit(
-                            "llm_decision",
-                            summary=f"{vehicle} choice={choice_idx} outbox={outbox_count}",
-                            veh_id=vehicle,
-                            choice_idx=choice_idx,
-                            reason=decision_reason,
-                            conflict_assessment=decision_conflict_assessment,
-                            outbox_count=outbox_count,
-                            round=decision_round,
-                            sim_t_s=sim_t_s,
-                        )
+                    decision_reason = agent_state.last_llm_reason
+                    fallback_reason = "cached"
                     replay.record_llm_dialog(
-                        step=step_idx,
-                        sim_t_s=sim_t_s,
-                        veh_id=vehicle,
-                        control_mode=CONTROL_MODE,
-                        model=OPENAI_MODEL,
-                        system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                        response_text=getattr(resp, "output_text", None),
-                        parsed=decision.model_dump() if hasattr(decision, "model_dump") else None,
-                        error=None,
+                        step=step_idx, sim_t_s=sim_t_s, veh_id=vehicle,
+                        control_mode=CONTROL_MODE, model=OPENAI_MODEL,
+                        system_prompt=system_prompt, user_prompt=user_prompt,
+                        response_text=f"[cached] choice_index={choice_idx}",
+                        parsed=None, error=None,
                     )
-                except Exception as e:
-                    print(f"[WARN] LLM decision failed for {vehicle}: {e}")
-                    llm_error = str(e)
-                    fallback_reason = "llm_error"
-                    if EVENTS_ENABLED:
-                        events.emit(
-                            "llm_error",
-                            summary=f"{vehicle} error={e}",
+                else:
+                    # LLM decision (Structured Outputs)
+                    try:
+                        resp = client.responses.parse(
+                            model=OPENAI_MODEL,
+                            input=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt},
+                            ],
+                            text_format=DecisionModel,
+                        )
+                        decision = resp.output_parsed
+                        choice_idx = int(decision.choice_index)
+                        raw_choice_idx = choice_idx
+                        decision_reason = getattr(decision, "reason", None)
+                        decision_conflict_assessment = getattr(decision, "conflict_assessment", None)
+                        outbox_count = len(getattr(decision, "outbox", None) or [])
+                        messaging.queue_outbox(vehicle, getattr(decision, "outbox", None))
+                        if EVENTS_ENABLED:
+                            events.emit(
+                                "llm_decision",
+                                summary=f"{vehicle} choice={choice_idx} outbox={outbox_count}",
+                                veh_id=vehicle,
+                                choice_idx=choice_idx,
+                                reason=decision_reason,
+                                conflict_assessment=decision_conflict_assessment,
+                                outbox_count=outbox_count,
+                                round=decision_round,
+                                sim_t_s=sim_t_s,
+                            )
+                        replay.record_llm_dialog(
+                            step=step_idx,
+                            sim_t_s=sim_t_s,
                             veh_id=vehicle,
+                            control_mode=CONTROL_MODE,
+                            model=OPENAI_MODEL,
+                            system_prompt=system_prompt,
+                            user_prompt=user_prompt,
+                            response_text=getattr(resp, "output_text", None),
+                            parsed=decision.model_dump() if hasattr(decision, "model_dump") else None,
+                            error=None,
+                        )
+                    except Exception as e:
+                        print(f"[WARN] LLM decision failed for {vehicle}: {e}")
+                        llm_error = str(e)
+                        fallback_reason = "llm_error"
+                        if EVENTS_ENABLED:
+                            events.emit(
+                                "llm_error",
+                                summary=f"{vehicle} error={e}",
+                                veh_id=vehicle,
+                                error=str(e),
+                                round=decision_round,
+                                sim_t_s=sim_t_s,
+                            )
+                        replay.record_llm_dialog(
+                            step=step_idx,
+                            sim_t_s=sim_t_s,
+                            veh_id=vehicle,
+                            control_mode=CONTROL_MODE,
+                            model=OPENAI_MODEL,
+                            system_prompt=system_prompt,
+                            user_prompt=user_prompt,
+                            response_text=None,
+                            parsed=None,
                             error=str(e),
-                            round=decision_round,
-                            sim_t_s=sim_t_s,
                         )
-                    replay.record_llm_dialog(
-                        step=step_idx,
-                        sim_t_s=sim_t_s,
-                        veh_id=vehicle,
-                        control_mode=CONTROL_MODE,
-                        model=OPENAI_MODEL,
-                        system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                        response_text=None,
-                        parsed=None,
-                        error=str(e),
-                    )
-                    choice_idx = -2  # trigger fallback
+                        choice_idx = -2  # trigger fallback
+                    agent_state.last_input_hash = _veh_hash
+                    agent_state.last_llm_choice_idx = choice_idx
+                    agent_state.last_llm_reason = decision_reason
 
                 # Handle KEEP
                 if choice_idx == -1:
@@ -3805,79 +3966,107 @@ def process_vehicles(step_idx: int):
                 fallback_reason = None
                 llm_error = None
 
-                try:
-                    resp = client.responses.parse(
-                        model=OPENAI_MODEL,
-                        input=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        text_format=DecisionModel,
-                    )
-                    decision = resp.output_parsed
-                    choice_idx = int(decision.choice_index)
+                # --- Input-hash skip: reuse previous LLM decision if inputs unchanged ---
+                _rt_hash = _decision_input_hash(
+                    roadid, belief_state, len(inbox_for_vehicle),
+                    current_edge_margin_m,
+                    menu_utilities=tuple(
+                        round(float(item.get("expected_utility") or 0), 2)
+                        for item in menu
+                    ),
+                )
+                if (
+                    agent_state.last_input_hash == _rt_hash
+                    and agent_state.last_llm_choice_idx is not None
+                ):
+                    choice_idx = agent_state.last_llm_choice_idx
                     raw_choice_idx = choice_idx
-                    decision_reason = getattr(decision, "reason", None)
-                    decision_conflict_assessment = getattr(decision, "conflict_assessment", None)
-                    outbox_count = len(getattr(decision, "outbox", None) or [])
-                    messaging.queue_outbox(vehicle, getattr(decision, "outbox", None))
-                    if EVENTS_ENABLED:
-                        events.emit(
-                            "llm_decision",
-                            summary=f"{vehicle} choice={choice_idx} outbox={outbox_count}",
-                            veh_id=vehicle,
-                            choice_idx=choice_idx,
-                            reason=decision_reason,
-                            conflict_assessment=decision_conflict_assessment,
-                            outbox_count=outbox_count,
-                            round=decision_round,
-                            sim_t_s=sim_t_s,
-                        )
+                    decision_reason = agent_state.last_llm_reason
+                    fallback_reason = "cached"
                     replay.record_llm_dialog(
-                        step=step_idx,
-                        sim_t_s=sim_t_s,
-                        veh_id=vehicle,
-                        control_mode=CONTROL_MODE,
-                        model=OPENAI_MODEL,
-                        system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                        response_text=getattr(resp, "output_text", None),
-                        parsed=decision.model_dump() if hasattr(decision, "model_dump") else None,
-                        error=None,
+                        step=step_idx, sim_t_s=sim_t_s, veh_id=vehicle,
+                        control_mode=CONTROL_MODE, model=OPENAI_MODEL,
+                        system_prompt=system_prompt, user_prompt=user_prompt,
+                        response_text=f"[cached] choice_index={choice_idx}",
+                        parsed=None, error=None,
                     )
-                except Exception as e:
-                    print(f"[WARN] LLM decision failed for {vehicle}: {e}")
-                    llm_error = str(e)
-                    fallback_reason = "llm_error"
-                    if EVENTS_ENABLED:
-                        events.emit(
-                            "llm_error",
-                            summary=f"{vehicle} error={e}",
+                else:
+                    try:
+                        resp = client.responses.parse(
+                            model=OPENAI_MODEL,
+                            input=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt},
+                            ],
+                            text_format=DecisionModel,
+                        )
+                        decision = resp.output_parsed
+                        choice_idx = int(decision.choice_index)
+                        raw_choice_idx = choice_idx
+                        decision_reason = getattr(decision, "reason", None)
+                        decision_conflict_assessment = getattr(decision, "conflict_assessment", None)
+                        outbox_count = len(getattr(decision, "outbox", None) or [])
+                        messaging.queue_outbox(vehicle, getattr(decision, "outbox", None))
+                        if EVENTS_ENABLED:
+                            events.emit(
+                                "llm_decision",
+                                summary=f"{vehicle} choice={choice_idx} outbox={outbox_count}",
+                                veh_id=vehicle,
+                                choice_idx=choice_idx,
+                                reason=decision_reason,
+                                conflict_assessment=decision_conflict_assessment,
+                                outbox_count=outbox_count,
+                                round=decision_round,
+                                sim_t_s=sim_t_s,
+                            )
+                        replay.record_llm_dialog(
+                            step=step_idx,
+                            sim_t_s=sim_t_s,
                             veh_id=vehicle,
+                            control_mode=CONTROL_MODE,
+                            model=OPENAI_MODEL,
+                            system_prompt=system_prompt,
+                            user_prompt=user_prompt,
+                            response_text=getattr(resp, "output_text", None),
+                            parsed=decision.model_dump() if hasattr(decision, "model_dump") else None,
+                            error=None,
+                        )
+                    except Exception as e:
+                        print(f"[WARN] LLM decision failed for {vehicle}: {e}")
+                        llm_error = str(e)
+                        fallback_reason = "llm_error"
+                        if EVENTS_ENABLED:
+                            events.emit(
+                                "llm_error",
+                                summary=f"{vehicle} error={e}",
+                                veh_id=vehicle,
+                                error=str(e),
+                                round=decision_round,
+                                sim_t_s=sim_t_s,
+                            )
+                        replay.record_llm_dialog(
+                            step=step_idx,
+                            sim_t_s=sim_t_s,
+                            veh_id=vehicle,
+                            control_mode=CONTROL_MODE,
+                            model=OPENAI_MODEL,
+                            system_prompt=system_prompt,
+                            user_prompt=user_prompt,
+                            response_text=None,
+                            parsed=None,
                             error=str(e),
-                            round=decision_round,
-                            sim_t_s=sim_t_s,
                         )
-                    replay.record_llm_dialog(
-                        step=step_idx,
-                        sim_t_s=sim_t_s,
-                        veh_id=vehicle,
-                        control_mode=CONTROL_MODE,
-                        model=OPENAI_MODEL,
-                        system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                        response_text=None,
-                        parsed=None,
-                        error=str(e),
-                    )
-                    choice_idx = sorted(
-                        range(len(menu)),
-                        key=lambda i: (
-                            -float(menu[i].get("expected_utility", -10**9)),
-                            menu[i]["blocked_edges"],
-                            menu[i]["risk_sum"],
-                        )
-                    )[0]
+                        choice_idx = sorted(
+                            range(len(menu)),
+                            key=lambda i: (
+                                -float(menu[i].get("expected_utility", -10**9)),
+                                menu[i]["blocked_edges"],
+                                menu[i]["risk_sum"],
+                            )
+                        )[0]
+                    agent_state.last_input_hash = _rt_hash
+                    agent_state.last_llm_choice_idx = choice_idx
+                    agent_state.last_llm_reason = decision_reason
 
                 selected_item = next((x for x in menu if x.get("idx") == choice_idx), None)
                 if OVERLAYS_ENABLED:

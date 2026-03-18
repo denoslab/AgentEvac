@@ -30,7 +30,7 @@ Psychological profile parameters stored in each agent's ``profile`` dict:
 import math
 import random
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -66,6 +66,10 @@ class AgentRuntimeState:
     decision_history: List[Dict[str, Any]] = field(default_factory=list)
     observation_history: List[Dict[str, Any]] = field(default_factory=list)
     has_departed: bool = True
+    last_input_hash: Optional[int] = None
+    last_llm_choice_idx: Optional[int] = None
+    last_llm_reason: Optional[str] = None
+    last_llm_action: Optional[str] = None
 
 
 # Global registry of all agent states, keyed by vehicle ID.
