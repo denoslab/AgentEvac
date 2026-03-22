@@ -165,6 +165,7 @@ def run_experiment_case(
     sumo_binary: str = "sumo",
     run_mode: str = "record",
     timeout_s: Optional[float] = None,
+    sumo_seed: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Execute one parameter-grid case by spawning a simulation subprocess.
 
@@ -228,6 +229,8 @@ def run_experiment_case(
         "DEFAULT_THETA_TRUST": str(float(case_cfg["theta_trust"])),
         "SUMO_BINARY": str(sumo_binary),
     })
+    if sumo_seed is not None:
+        env["SUMO_SEED"] = str(int(sumo_seed))
     if "DEFAULT_LAMBDA_E" in case_cfg:
         env["DEFAULT_LAMBDA_E"] = str(float(case_cfg["DEFAULT_LAMBDA_E"]))
     if "DEFAULT_LAMBDA_T" in case_cfg:
@@ -285,6 +288,7 @@ def run_parameter_sweep(
     sumo_binary: str = "sumo",
     run_mode: str = "record",
     timeout_s: Optional[float] = None,
+    sumo_seed: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Run all cases in the experiment grid sequentially.
 
@@ -317,6 +321,7 @@ def run_parameter_sweep(
                 sumo_binary=sumo_binary,
                 run_mode=run_mode,
                 timeout_s=timeout_s,
+                sumo_seed=sumo_seed,
             )
         )
     return results
@@ -405,6 +410,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--trust-values", default="0.5")
     parser.add_argument("--scenario-values", default="advice_guided")
     parser.add_argument("--messaging", choices=["on", "off"], default="on")
+    parser.add_argument("--sumo-seed", type=int, default=None,
+                        help="SUMO random seed (integer). Overrides SUMO_SEED env var.")
     return parser.parse_args()
 
 
@@ -427,6 +434,7 @@ def main() -> int:
         sumo_binary=args.sumo_binary,
         run_mode=args.run_mode,
         timeout_s=args.timeout_s,
+        sumo_seed=args.sumo_seed,
     )
     exported = export_experiment_results(results, output_dir=args.output_dir)
     print(f"[EXPERIMENTS] cases={len(results)}")

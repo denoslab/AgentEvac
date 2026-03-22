@@ -38,15 +38,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-SEEDS=(12345 12346 12347 12348 12349)
-
-for seed in "${SEEDS[@]}"; do
+for seed in 12345 12346 12347 12348 12349; do
   echo "============================================"
   echo "[RQ3] seed=${seed}"
   echo "============================================"
-  SUMO_SEED="$seed" python3 -m agentevac.analysis.experiments \
+  python3 -m agentevac.analysis.experiments \
     --output-dir "outputs/rq3/pareto_seed_${seed}" \
     --sumo-binary sumo \
+    --sumo-seed "$seed" \
     --sigma-values 20,40,80 \
     --delay-values 0,30,60 \
     --trust-values 0.25,0.5,0.75 \
