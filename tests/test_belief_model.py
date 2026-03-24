@@ -18,7 +18,7 @@ from agentevac.agents.belief_model import (
 
 class TestCategorizeHazardState:
     def test_safe_margin_gives_high_p_safe(self):
-        result = categorize_hazard_state({"observed_margin_m": 800.0})
+        result = categorize_hazard_state({"observed_margin_m": 8000.0})
         assert result["p_safe"] > result["p_danger"]
 
     def test_danger_margin_gives_high_p_danger(self):
@@ -32,7 +32,7 @@ class TestCategorizeHazardState:
             assert abs(total - 1.0) < 1e-9, f"margin={m}: sum={total}"
 
     def test_falls_back_to_base_margin_m(self):
-        result = categorize_hazard_state({"base_margin_m": 800.0})
+        result = categorize_hazard_state({"base_margin_m": 8000.0})
         assert result["p_safe"] > result["p_danger"]
 
     def test_missing_margin_returns_uniform(self):
@@ -42,7 +42,7 @@ class TestCategorizeHazardState:
 
     def test_closer_margin_implies_higher_danger(self):
         close = categorize_hazard_state({"observed_margin_m": 50.0})
-        far = categorize_hazard_state({"observed_margin_m": 800.0})
+        far = categorize_hazard_state({"observed_margin_m": 8000.0})
         assert close["p_danger"] > far["p_danger"]
 
 
@@ -151,7 +151,7 @@ class TestUpdateAgentBelief:
         return {"p_safe": 1 / 3, "p_risky": 1 / 3, "p_danger": 1 / 3}
 
     def _safe_env(self):
-        return {"observed_margin_m": 900.0}
+        return {"observed_margin_m": 8000.0}
 
     def _danger_env(self):
         return {"observed_margin_m": 0.0}

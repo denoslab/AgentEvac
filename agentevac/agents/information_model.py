@@ -29,13 +29,13 @@ def _state_from_margin(margin_m: Optional[float]) -> str:
         margin_m: Distance in metres from the nearest fire edge; ``None`` if unknown.
 
     Returns:
-        One of "danger" (≤ 100 m), "risky" (≤ 300 m), "safe" (> 300 m), or "unknown".
+        One of "danger" (≤ 1200 m), "risky" (≤ 2500 m), "safe" (> 2500 m), or "unknown".
     """
     if margin_m is None:
         return "unknown"
-    if margin_m <= 100.0:
+    if margin_m <= 1200.0:
         return "danger"
-    if margin_m <= 300.0:
+    if margin_m <= 2500.0:
         return "risky"
     return "safe"
 

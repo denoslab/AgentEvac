@@ -115,7 +115,7 @@ class TestAnnotateMenuWithExpectedUtility:
                 "name": f"shelter_{i}",
                 "risk_sum": float(i),
                 "blocked_edges": 0,
-                "min_margin_m": 500.0,
+                "min_margin_m": 6000.0,
                 "travel_time_s_fastest_path": 300.0,
                 "reachable": reachable,
             }
@@ -164,7 +164,7 @@ class TestAnnotateMenuWithExpectedUtility:
     def test_higher_risk_gets_lower_utility(self):
         menu = [
             {"idx": 0, "name": "safe", "risk_sum": 0.0, "blocked_edges": 0,
-             "min_margin_m": 1000.0, "travel_time_s_fastest_path": 300.0, "reachable": True},
+             "min_margin_m": 8000.0, "travel_time_s_fastest_path": 300.0, "reachable": True},
             {"idx": 1, "name": "risky", "risk_sum": 5.0, "blocked_edges": 2,
              "min_margin_m": 10.0, "travel_time_s_fastest_path": 300.0, "reachable": True},
         ]

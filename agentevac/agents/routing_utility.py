@@ -63,12 +63,12 @@ def _effective_margin_penalty(min_margin_m: Any) -> float:
     model uncertainty: even routes with no fire currently nearby may become risky.
 
     Thresholds:
-        - ∞ (no fire detected)      → 0.25  (nominal baseline)
-        - ≤ 0 m (inside fire)       → 5.0   (highest risk)
-        - ≤ 100 m (very close)      → 3.0
-        - ≤ 300 m (near)            → 1.5
-        - ≤ 700 m (buffered)        → 0.6
-        - > 700 m (clear)           → 0.15  (lowest non-zero risk)
+        - ∞ (no fire detected)       → 0.25  (nominal baseline)
+        - ≤ 0 m (inside fire)        → 5.0   (highest risk)
+        - ≤ 1200 m (very close)      → 3.0
+        - ≤ 2500 m (near)            → 1.5
+        - ≤ 5000 m (buffered)        → 0.6
+        - > 5000 m (clear)           → 0.15  (lowest non-zero risk)
 
     Args:
         min_margin_m: Minimum fire margin in metres along the route; may be ``None``
@@ -82,11 +82,11 @@ def _effective_margin_penalty(min_margin_m: Any) -> float:
         return 0.25
     if margin <= 0.0:
         return 5.0
-    if margin <= 100.0:
+    if margin <= 1200.0:
         return 3.0
-    if margin <= 300.0:
+    if margin <= 2500.0:
         return 1.5
-    if margin <= 700.0:
+    if margin <= 5000.0:
         return 0.6
     return 0.15
 

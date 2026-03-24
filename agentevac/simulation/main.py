@@ -129,7 +129,7 @@ NET_FILE = os.getenv("NET_FILE", "sumo/Repaired.net.xml")  # override via NET_FI
 
 # OpenAI model + decision cadence
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-DECISION_PERIOD_S = float(os.getenv("DECISION_PERIOD_S", "30.0"))  # LLM may change decisions each period; default=5.0
+DECISION_PERIOD_S = float(os.getenv("DECISION_PERIOD_S", "60.0"))  # LLM may change decisions each period; (simu sec.)
 
 # Preset routes (Situation 1) - only needed if CONTROL_MODE="route"
 ROUTE_LIBRARY = [
@@ -422,9 +422,9 @@ DEFAULT_SOCIAL_TRIGGER = float(os.getenv("DEFAULT_SOCIAL_TRIGGER", "0.5"))
 DEFAULT_SOCIAL_MIN_DANGER = float(os.getenv("DEFAULT_SOCIAL_MIN_DANGER", "0.15"))
 MAX_SYSTEM_OBSERVATIONS = int(os.getenv("MAX_SYSTEM_OBSERVATIONS", "16"))
 # Driver-briefing threshold config
-MARGIN_VERY_CLOSE_M = _float_from_env_or_cli(CLI_ARGS.margin_very_close_m, "MARGIN_VERY_CLOSE_M", 100.0)
-MARGIN_NEAR_M = _float_from_env_or_cli(CLI_ARGS.margin_near_m, "MARGIN_NEAR_M", 300.0)
-MARGIN_BUFFERED_M = _float_from_env_or_cli(CLI_ARGS.margin_buffered_m, "MARGIN_BUFFERED_M", 700.0)
+MARGIN_VERY_CLOSE_M = _float_from_env_or_cli(CLI_ARGS.margin_very_close_m, "MARGIN_VERY_CLOSE_M", 1200.0)
+MARGIN_NEAR_M = _float_from_env_or_cli(CLI_ARGS.margin_near_m, "MARGIN_NEAR_M", 2500.0)
+MARGIN_BUFFERED_M = _float_from_env_or_cli(CLI_ARGS.margin_buffered_m, "MARGIN_BUFFERED_M", 5000.0)
 RISK_DENSITY_HIGH = _float_from_env_or_cli(CLI_ARGS.risk_density_high, "RISK_DENSITY_HIGH", 0.70)
 RISK_DENSITY_MEDIUM = _float_from_env_or_cli(CLI_ARGS.risk_density_medium, "RISK_DENSITY_MEDIUM", 0.35)
 RISK_DENSITY_LOW = _float_from_env_or_cli(CLI_ARGS.risk_density_low, "RISK_DENSITY_LOW", 0.12)
@@ -432,13 +432,13 @@ DELAY_FAST_RATIO = _float_from_env_or_cli(CLI_ARGS.delay_fast_ratio, "DELAY_FAST
 DELAY_MODERATE_RATIO = _float_from_env_or_cli(CLI_ARGS.delay_moderate_ratio, "DELAY_MODERATE_RATIO", 1.30)
 DELAY_HEAVY_RATIO = _float_from_env_or_cli(CLI_ARGS.delay_heavy_ratio, "DELAY_HEAVY_RATIO", 1.60)
 RECOMMENDED_MIN_MARGIN_M = _float_from_env_or_cli(
-    CLI_ARGS.recommended_min_margin_m, "RECOMMENDED_MIN_MARGIN_M", 300.0
+    CLI_ARGS.recommended_min_margin_m, "RECOMMENDED_MIN_MARGIN_M", 2500.0
 )
 CAUTION_MIN_MARGIN_M = _float_from_env_or_cli(
-    CLI_ARGS.caution_min_margin_m, "CAUTION_MIN_MARGIN_M", 100.0
+    CLI_ARGS.caution_min_margin_m, "CAUTION_MIN_MARGIN_M", 1200.0
 )
 SIM_END_TIME_S = _float_from_env_or_cli(
-    CLI_ARGS.sim_end_time, "SIM_END_TIME_S", 1200.0
+    CLI_ARGS.sim_end_time, "SIM_END_TIME_S", 14400.0
 )
 
 if not (0.0 <= MARGIN_VERY_CLOSE_M <= MARGIN_NEAR_M <= MARGIN_BUFFERED_M):
@@ -525,29 +525,25 @@ if RUN_MODE == "replay" and not os.path.exists(REPLAY_LOG_PATH):
 # NEW_FIRE_EVENTS: fires that ignite mid-simulation (within the forecast horizon).
 # Coordinates are in SUMO network metres; match against the loaded .net.xml.
 FIRE_SOURCES = [
-    # {"id": "F0", "t0": 0.0,   "x": 9000.0, "y": 9000.0, "r0": 3000.0, "growth_m_per_s": 0.20},
-    # {"id": "F0_1", "t0": 0.0,   "x": 9000.0, "y": 27000.0, "r0": 3000.0, "growth_m_per_s": 0.20},
-{"id": "F0", "t0": 0.0,   "x": 22000.0, "y": 9000.0, "r0": 3000.0, "growth_m_per_s": 0.02},
-    {"id": "F0_1", "t0": 0.0, "x": 24000.0, "y": 6000.0, "r0": 3000.0, "growth_m_per_s": 0.02},
+    {"id": "F0", "t0": 0.0,   "x": 16805.0, "y": 9380.0, "r0": 500.0, "growth_m_per_s": 0.02},
+    {"id": "F0_1", "t0": 0.0,   "x": 20000.0, "y": 8800.0, "r0": 800.0, "growth_m_per_s": 0.02},
+    {"id": "F0_2", "t0": 0.0,   "x": 20600.0, "y": 10500.0, "r0": 800.0, "growth_m_per_s": 0.02},
+    {"id": "F0_3", "t0": 0.0, "x": 16500.0, "y": 11500.0, "r0": 800.0, "growth_m_per_s": 0.02},
+    {"id": "F0_4", "t0": 0.0, "x": 16200.0, "y": 13000.0, "r0": 800.0, "growth_m_per_s": 0.02},
 
 
 ]
 NEW_FIRE_EVENTS = [
-    # {"id": "F1", "t0": 100.0, "x": 5000.0, "y": 4500.0,  "r0": 2000.0, "growth_m_per_s": 0.30},
-    # {"id": "F0_2", "t0": 50.0,   "x": 15000.0, "y": 21000.0, "r0": 3000.0, "growth_m_per_s": 0.20},
-    # {"id": "F0_3", "t0": 75.0,   "x": 15000.0, "y": 15000.0, "r0": 3000.0, "growth_m_per_s": 0.20},
-    {"id": "F1_4", "t0": 90.0, "x": 20000.0, "y": 6000.0, "r0": 3000.0, "growth_m_per_s": 0.02},
-    {"id": "F1", "t0": 150.0, "x": 20000.0, "y": 12000.0,  "r0": 2000.0, "growth_m_per_s": 0.02},
-    {"id": "F1_2", "t0": 210.0,   "x": 18000.0, "y": 14000.0, "r0": 3000.0, "growth_m_per_s": 0.02},
-    {"id": "F1_3", "t0": 270.0,   "x": 15000.0, "y": 18000.0, "r0": 3000.0, "growth_m_per_s": 0.02},
+    {"id": "F1_1", "t0": 80.0,   "x": 14600.0, "y": 15800.0, "r0": 800.0, "growth_m_per_s": 0.02},
+
 
 ]
 
 # Risk model params:
 #   FIRE_WARNING_BUFFER_M : extra buffer added to fire radius when classifying edges as blocked.
 #   RISK_DECAY_M          : exponential decay length scale for edge risk score = exp(-margin/RISK_DECAY_M).
-FIRE_WARNING_BUFFER_M = 100.0
-RISK_DECAY_M = 80.0
+FIRE_WARNING_BUFFER_M = 1200.0
+RISK_DECAY_M = 960.0
 
 # ---- Fire visualization in SUMO-GUI (Shapes) ----
 FIRE_DRAW_ENABLED = True

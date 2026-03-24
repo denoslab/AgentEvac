@@ -52,12 +52,12 @@ def _margin_band(margin_m: Optional[float]) -> str:
     readable description of how close a fire is to a road edge.
 
     Thresholds:
-        - ``None``   : "unknown"
-        - ≤ 0 m      : "inside_predicted_fire"  (fire has overtaken the edge)
-        - ≤ 100 m    : "very_close"
-        - ≤ 300 m    : "near"
-        - ≤ 700 m    : "buffered"
-        - > 700 m    : "clear"
+        - ``None``    : "unknown"
+        - ≤ 0 m       : "inside_predicted_fire"  (fire has overtaken the edge)
+        - ≤ 1200 m    : "very_close"
+        - ≤ 2500 m    : "near"
+        - ≤ 5000 m    : "buffered"
+        - > 5000 m    : "clear"
 
     Args:
         margin_m: Minimum distance (metres) from fire edge to road edge.
@@ -69,11 +69,11 @@ def _margin_band(margin_m: Optional[float]) -> str:
         return "unknown"
     if margin_m <= 0.0:
         return "inside_predicted_fire"
-    if margin_m <= 100.0:
+    if margin_m <= 1200.0:
         return "very_close"
-    if margin_m <= 300.0:
+    if margin_m <= 2500.0:
         return "near"
-    if margin_m <= 700.0:
+    if margin_m <= 5000.0:
         return "buffered"
     return "clear"
 

@@ -12,7 +12,7 @@ from agentevac.utils.forecast_layer import (
 
 def _safe_edge_risk_fn(edge_id):
     """Always-safe: not blocked, zero risk, large margin."""
-    return (False, 0.0, 1000.0)
+    return (False, 0.0, 8000.0)
 
 
 def _dangerous_edge_risk_fn(edge_id):
@@ -96,11 +96,11 @@ class TestEstimateEdgeForecastRisk:
         assert result["band"] == "very_close"
 
     def test_near_band(self):
-        result = estimate_edge_forecast_risk("e", lambda _: (False, 0.05, 200.0))
+        result = estimate_edge_forecast_risk("e", lambda _: (False, 0.05, 1800.0))
         assert result["band"] == "near"
 
     def test_buffered_band(self):
-        result = estimate_edge_forecast_risk("e", lambda _: (False, 0.01, 500.0))
+        result = estimate_edge_forecast_risk("e", lambda _: (False, 0.01, 3500.0))
         assert result["band"] == "buffered"
 
     def test_edge_id_forwarded_to_risk_fn(self):

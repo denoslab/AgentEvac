@@ -45,7 +45,7 @@ class TestInjectSignalNoise:
         assert sig["observed_state"] == "danger"
 
     def test_observed_state_safe_when_margin_large(self):
-        sig = inject_signal_noise({"base_margin_m": 1000.0}, sigma_info=0.0)
+        sig = inject_signal_noise({"base_margin_m": 5000.0}, sigma_info=0.0)
         assert sig["observed_state"] == "safe"
 
     def test_output_is_shallow_copy(self):

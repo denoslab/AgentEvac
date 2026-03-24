@@ -68,11 +68,11 @@ def categorize_hazard_state(signal: Dict[str, Any]) -> Dict[str, float]:
     If neither is present (e.g., no fire active), returns a uniform prior.
 
     Threshold rationale:
-        - ≤ 0 m   : fire has reached / overtaken the edge  → near-certain danger.
-        - ≤ 100 m : fire front is on the street block       → high danger.
-        - ≤ 300 m : fire within roughly two city blocks     → risky (watch closely).
-        - ≤ 700 m : fire is a few blocks away               → elevated but manageable.
-        - > 700 m : fire is well clear of the route         → predominantly safe.
+        - ≤ 0 m    : fire has reached / overtaken the edge  → near-certain danger.
+        - ≤ 1200 m : within ember-attack range               → high danger.
+        - ≤ 2500 m : smoke / radiant-heat proximity          → risky (watch closely).
+        - ≤ 5000 m : fire visible but with buffer            → elevated but manageable.
+        - > 5000 m : fire is well clear of the route         → predominantly safe.
 
     Args:
         signal: Environment signal dict, typically from ``information_model.sample_environment_signal``.
@@ -89,11 +89,11 @@ def categorize_hazard_state(signal: Dict[str, Any]) -> Dict[str, float]:
     margin_f = float(margin)
     if margin_f <= 0.0:
         return {"p_safe": 0.02, "p_risky": 0.08, "p_danger": 0.90}
-    if margin_f <= 100.0:
+    if margin_f <= 1200.0:
         return {"p_safe": 0.05, "p_risky": 0.20, "p_danger": 0.75}
-    if margin_f <= 300.0:
+    if margin_f <= 2500.0:
         return {"p_safe": 0.15, "p_risky": 0.55, "p_danger": 0.30}
-    if margin_f <= 700.0:
+    if margin_f <= 5000.0:
         return {"p_safe": 0.35, "p_risky": 0.50, "p_danger": 0.15}
     return {"p_safe": 0.75, "p_risky": 0.20, "p_danger": 0.05}
 
