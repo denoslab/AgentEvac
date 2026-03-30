@@ -231,6 +231,70 @@ def filter_menu_for_scenario(
     return prompt_menu
 
 
+def filter_history_for_scenario(
+    mode: str,
+    history: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Strip scenario-inappropriate fields from agent self-history records.
+
+    History records are stored unfiltered for post-hoc analysis, but this
+    function creates sanitised copies that respect the active information
+    regime before embedding them in the LLM prompt.
+
+    Leaked fields prevented:
+
+    * ``no_notice``: forecast data, advisory/briefing labels, fire-specific
+      risk metrics (blocked_edges, risk_sum, min_margin_m), and raw margin
+      numbers in the environment signal.
+    * ``alert_guided``: advisory/briefing labels and route-head forecast
+      detail.
+    * ``advice_guided``: no filtering (all data visible).
+    """
+    cfg = load_scenario_config(mode)
+
+    if cfg["mode"] == "advice_guided":
+        return history
+
+    filtered: List[Dict[str, Any]] = []
+    for rec in history:
+        out = dict(rec)  # shallow copy — only mutated keys are replaced below
+
+        # --- Forecast ---
+        if not cfg["forecast_visible"]:
+            out["forecast"] = {"available": False}
+        elif not cfg["route_head_forecast_visible"]:
+            fc = dict(out.get("forecast") or {})
+            fc.pop("route_head", None)
+            out["forecast"] = fc
+
+        # --- Selected option ---
+        sel = out.get("selected_option")
+        if sel:
+            sel = dict(sel)
+            if not cfg["official_route_guidance_visible"]:
+                sel.pop("advisory", None)
+                sel.pop("briefing", None)
+            if cfg["mode"] == "no_notice":
+                # Keep only fields plausible from local knowledge.
+                sel = {k: v for k, v in sel.items()
+                       if k in {"name", "dest_edge", "expected_utility", "travel_time_s"}}
+            out["selected_option"] = sel
+
+        # --- Environment signal (no_notice: strip raw margin numbers) ---
+        if cfg["mode"] == "no_notice":
+            env_sig = (out.get("signals") or {}).get("environment")
+            if env_sig:
+                out["signals"] = dict(out.get("signals", {}))
+                out["signals"]["environment"] = {
+                    "observed_state": env_sig.get("observed_state"),
+                    "is_delayed": env_sig.get("is_delayed", False),
+                }
+
+        filtered.append(out)
+
+    return filtered
+
+
 def scenario_prompt_suffix(mode: str) -> str:
     """Return an LLM instruction suffix that contextualises the active information regime.
 

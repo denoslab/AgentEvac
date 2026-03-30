@@ -5,6 +5,7 @@ import pytest
 from agentevac.agents.scenarios import (
     SCENARIO_CHOICES,
     apply_scenario_to_signals,
+    filter_history_for_scenario,
     filter_menu_for_scenario,
     load_scenario_config,
     scenario_prompt_suffix,
@@ -186,6 +187,133 @@ class TestFilterMenuForScenario:
         menu = self._full_menu() * 3
         result = filter_menu_for_scenario("advice_guided", menu, control_mode="destination")
         assert len(result) == 3
+
+
+class TestFilterHistoryForScenario:
+    def _sample_record(self):
+        return {
+            "decision_round": 5,
+            "current_edge": "e1",
+            "current_edge_margin_m": 1500.0,
+            "route_head_min_margin_m": 800.0,
+            "trend_vs_last_round": "stable",
+            "signals": {
+                "environment": {
+                    "observed_state": "risky",
+                    "is_delayed": False,
+                    "base_margin_m": 800.0,
+                    "observed_margin_m": 750.0,
+                    "sigma_info": 40.0,
+                    "source_metric": "route_head_min_margin_m",
+                },
+                "social": {"observed_state": "danger", "sample_count": 2},
+            },
+            "forecast": {
+                "summary": {"fire_count": 3},
+                "current_edge": {"margin_m": 1500},
+                "route_head": {"available": True, "head_edges_evaluated": 4},
+                "briefing": "Fire spreading east",
+            },
+            "selected_option": {
+                "name": "shelter_1",
+                "dest_edge": "e_shelter",
+                "advisory": "Recommended",
+                "briefing": "Take this route",
+                "blocked_edges": 0,
+                "risk_sum": 1.2,
+                "min_margin_m": 800.0,
+                "travel_time_s": 300.0,
+                "expected_utility": -0.5,
+            },
+        }
+
+    # --- no_notice ---
+
+    def test_no_notice_strips_forecast(self):
+        result = filter_history_for_scenario("no_notice", [self._sample_record()])
+        assert result[0]["forecast"] == {"available": False}
+
+    def test_no_notice_strips_advisory_and_briefing_from_selected_option(self):
+        result = filter_history_for_scenario("no_notice", [self._sample_record()])
+        sel = result[0]["selected_option"]
+        assert "advisory" not in sel
+        assert "briefing" not in sel
+
+    def test_no_notice_strips_fire_metrics_from_selected_option(self):
+        result = filter_history_for_scenario("no_notice", [self._sample_record()])
+        sel = result[0]["selected_option"]
+        assert "blocked_edges" not in sel
+        assert "risk_sum" not in sel
+        assert "min_margin_m" not in sel
+
+    def test_no_notice_keeps_local_knowledge_in_selected_option(self):
+        result = filter_history_for_scenario("no_notice", [self._sample_record()])
+        sel = result[0]["selected_option"]
+        assert sel["name"] == "shelter_1"
+        assert sel["dest_edge"] == "e_shelter"
+        assert sel["expected_utility"] == -0.5
+        assert sel["travel_time_s"] == 300.0
+
+    def test_no_notice_strips_raw_margin_from_env_signal(self):
+        result = filter_history_for_scenario("no_notice", [self._sample_record()])
+        env = result[0]["signals"]["environment"]
+        assert env["observed_state"] == "risky"
+        assert "base_margin_m" not in env
+        assert "observed_margin_m" not in env
+        assert "sigma_info" not in env
+
+    def test_no_notice_preserves_non_leaked_fields(self):
+        result = filter_history_for_scenario("no_notice", [self._sample_record()])
+        assert result[0]["current_edge"] == "e1"
+        assert result[0]["current_edge_margin_m"] == 1500.0
+        assert result[0]["decision_round"] == 5
+
+    # --- alert_guided ---
+
+    def test_alert_guided_keeps_forecast_summary_but_strips_route_head(self):
+        result = filter_history_for_scenario("alert_guided", [self._sample_record()])
+        fc = result[0]["forecast"]
+        assert "summary" in fc
+        assert "route_head" not in fc
+
+    def test_alert_guided_strips_advisory_from_selected_option(self):
+        result = filter_history_for_scenario("alert_guided", [self._sample_record()])
+        sel = result[0]["selected_option"]
+        assert "advisory" not in sel
+        assert "briefing" not in sel
+        # But fire metrics are kept in alert_guided
+        assert "blocked_edges" in sel
+        assert "risk_sum" in sel
+
+    # --- advice_guided ---
+
+    def test_advice_guided_returns_unmodified(self):
+        history = [self._sample_record()]
+        result = filter_history_for_scenario("advice_guided", history)
+        assert result is history  # identity — no copy needed
+
+    # --- general ---
+
+    def test_original_record_not_mutated(self):
+        original = self._sample_record()
+        filter_history_for_scenario("no_notice", [original])
+        assert "advisory" in original["selected_option"]
+        assert "summary" in original["forecast"]
+
+    def test_empty_history(self):
+        assert filter_history_for_scenario("no_notice", []) == []
+
+    def test_record_without_selected_option(self):
+        rec = self._sample_record()
+        del rec["selected_option"]
+        result = filter_history_for_scenario("no_notice", [rec])
+        assert "selected_option" not in result[0]
+
+    def test_record_without_signals(self):
+        rec = self._sample_record()
+        del rec["signals"]
+        result = filter_history_for_scenario("no_notice", [rec])
+        assert result[0]["forecast"] == {"available": False}
 
 
 class TestScenarioPromptSuffix:
