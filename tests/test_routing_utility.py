@@ -36,14 +36,18 @@ def _menu_item(
     min_margin_m=None,
     travel_time_s=300.0,
     reachable=True,
+    len_edges=None,
 ):
-    return {
+    d = {
         "risk_sum": risk_sum,
         "blocked_edges": blocked_edges,
         "min_margin_m": min_margin_m,
         "travel_time_s_fastest_path": travel_time_s,
         "reachable": reachable,
     }
+    if len_edges is not None:
+        d["len_edges"] = len_edges
+    return d
 
 
 class TestScoreDestinationUtility:
@@ -478,3 +482,78 @@ class TestProximityFirePerceptionPenalty:
         )
         # visual: 1*8 + 5.0 = 13.0; proximity: 1*8 + 5.0 = 13.0; total extra = 26.0
         assert both == pytest.approx(base + 26.0)
+
+
+# ---------------------------------------------------------------------------
+# Edge-count invariance (risk_density normalisation)
+# ---------------------------------------------------------------------------
+
+class TestEdgeCountInvariance:
+    """Verify that _expected_exposure normalises risk_sum by len_edges,
+    so two representations of the same physical route (few large edges vs
+    many small edges) receive the same exposure score."""
+
+    def test_same_risk_density_same_exposure(self):
+        """risk_sum=2/len_edges=10 == risk_sum=20/len_edges=100."""
+        belief = _neutral_belief()
+        psych = _psychology()
+        profile = _profile()
+        few_edges = score_destination_utility(
+            _menu_item(risk_sum=2.0, len_edges=10), belief, psych, profile,
+        )
+        many_edges = score_destination_utility(
+            _menu_item(risk_sum=20.0, len_edges=100), belief, psych, profile,
+        )
+        assert few_edges == pytest.approx(many_edges, rel=1e-9)
+
+    def test_higher_density_lower_score(self):
+        """Same edge count but higher risk_sum → worse score."""
+        belief = _danger_belief()
+        psych = _psychology()
+        profile = _profile()
+        low_density = score_destination_utility(
+            _menu_item(risk_sum=1.0, len_edges=10), belief, psych, profile,
+        )
+        high_density = score_destination_utility(
+            _menu_item(risk_sum=9.0, len_edges=10), belief, psych, profile,
+        )
+        assert high_density < low_density
+
+    def test_more_edges_same_risk_sum_improves_score(self):
+        """More edges dilute the same risk_sum → lower density → better score."""
+        belief = _neutral_belief()
+        psych = _psychology()
+        profile = _profile()
+        concentrated = score_destination_utility(
+            _menu_item(risk_sum=5.0, len_edges=5), belief, psych, profile,
+        )
+        diluted = score_destination_utility(
+            _menu_item(risk_sum=5.0, len_edges=50), belief, psych, profile,
+        )
+        assert diluted > concentrated
+
+    def test_missing_len_edges_defaults_to_one(self):
+        """Without len_edges, risk_density = risk_sum / 1 = risk_sum (backward compat)."""
+        belief = _neutral_belief()
+        psych = _psychology()
+        profile = _profile()
+        without_key = score_destination_utility(
+            _menu_item(risk_sum=3.0), belief, psych, profile,
+        )
+        with_one = score_destination_utility(
+            _menu_item(risk_sum=3.0, len_edges=1), belief, psych, profile,
+        )
+        assert without_key == pytest.approx(with_one, rel=1e-9)
+
+    def test_route_mode_also_normalises(self):
+        """score_route_utility uses the same _expected_exposure normalisation."""
+        belief = _neutral_belief()
+        psych = _psychology()
+        profile = _profile()
+        few = score_route_utility(
+            _menu_item(risk_sum=2.0, len_edges=10), belief, psych, profile,
+        )
+        many = score_route_utility(
+            _menu_item(risk_sum=20.0, len_edges=100), belief, psych, profile,
+        )
+        assert few == pytest.approx(many, rel=1e-9)

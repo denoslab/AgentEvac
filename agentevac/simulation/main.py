@@ -74,7 +74,7 @@ from agentevac.agents.belief_model import update_agent_belief
 from agentevac.agents.departure_model import should_depart_now
 from agentevac.agents.routing_utility import annotate_menu_with_expected_utility
 from agentevac.analysis.metrics import RunMetricsCollector
-from agentevac.simulation.spawn_events import SPAWN_EVENTS
+from agentevac.config_loader import load_map_config, load_spawns, validate_spawn_positions
 from agentevac.utils.forecast_layer import (
     build_fire_forecast,
     estimate_edge_forecast_risk,
@@ -126,45 +126,17 @@ from sumolib import geomhelper
 #   "route"       -> LLM chooses among preset routes (kept here for completeness)
 CONTROL_MODE = "destination"
 
-# Your SUMO net file used by the .sumocfg (needed for edge geometry)
-NET_FILE = os.getenv("NET_FILE", "sumo/Repaired.net.xml")  # override via NET_FILE env var
+# NET_FILE, DESTINATION_LIBRARY, ROUTE_LIBRARY, SPAWN_EVENTS, FIRE_SOURCES,
+# and NEW_FIRE_EVENTS are loaded from configs/<map>/ after CLI parsing below.
 
 # OpenAI model + decision cadence
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 DECISION_PERIOD_S = float(os.getenv("DECISION_PERIOD_S", "60.0"))  # LLM may change decisions each period; (simu sec.)
 
-# Preset routes (Situation 1) - only needed if CONTROL_MODE="route"
-ROUTE_LIBRARY = [
-    {"name": "route_0", "edges": ["-479435809#1",
-                                  "-479435809#0",
-                                  "-479435812#0",
-                                  "-479435806",
-                                  "-30689314#10",
-                                  "-30689314#9",
-                                  "-30689314#8",
-                                  "-30689314#7",
-                                  "-30689314#6",
-                                  "-30689314#5",
-                                  "-30689314#4",
-                                  "-30689314#1",
-                                  "-30689314#0",
-                                  "-479505716#1",
-                                  "-479505717",
-                                  "-479505352",
-                                  "-479505354#2",
-                                  "-479505354#1",
-                                  "-479505354#0",
-                                  "-42047741#0",
-                                  "E#S1"
-                                  ]},
-]
-
-# Preset destinations (Situation 2)
-DESTINATION_LIBRARY = [
-    {"name": "shelter_0", "edge": "E#S0"},
-    {"name": "shelter_1", "edge": "E#S1"},
-    {"name": "shelter_2", "edge": "E#S2"},
-]
+# Route and destination libraries are loaded from the map config (configs/<map>/),
+# populated after CLI parsing below.  Declared here so downstream references resolve.
+ROUTE_LIBRARY: list = []
+DESTINATION_LIBRARY: list = []
 
 
 # =========================
@@ -276,6 +248,11 @@ def _parse_cli_args() -> argparse.Namespace:
     parser.add_argument("--recommended-min-margin-m", type=float, help="Min margin for advisory='Recommended'.")
     parser.add_argument("--caution-min-margin-m", type=float, help="Min margin for advisory='Use with caution'.")
     parser.add_argument("--sim-end-time", type=float, help="Simulation end time in seconds (default: 1200).")
+    parser.add_argument(
+        "--map",
+        default=os.getenv("MAP_NAME", "lytton"),
+        help="Map config directory name under configs/ (default: lytton).",
+    )
     return parser.parse_args()
 
 
@@ -309,6 +286,19 @@ def _float_from_env_or_cli(cli_value: Optional[float], env_key: str, default: fl
 
 CLI_ARGS = _parse_cli_args()
 _print_cli_flag_snapshot(CLI_ARGS)
+
+# --- Load map-specific config (spawns, fires, destinations, routes) ---
+_MAP_CFG = load_map_config(CLI_ARGS.map)
+NET_FILE = os.getenv("NET_FILE", _MAP_CFG["map"]["net_file"])
+DESTINATION_LIBRARY = _MAP_CFG["destinations"]
+ROUTE_LIBRARY = _MAP_CFG.get("routes", [])
+SPAWN_EVENTS = load_spawns(_MAP_CFG["spawns"], DESTINATION_LIBRARY)
+FIRE_SOURCES = _MAP_CFG["fires"]["sources"]
+NEW_FIRE_EVENTS = _MAP_CFG["fires"].get("events", [])
+print(f"[MAP] name={CLI_ARGS.map} net_file={NET_FILE} "
+      f"spawns={len(SPAWN_EVENTS)} fires={len(FIRE_SOURCES)}+{len(NEW_FIRE_EVENTS)} "
+      f"destinations={len(DESTINATION_LIBRARY)} routes={len(ROUTE_LIBRARY)}")
+
 RUN_MODE = (CLI_ARGS.run_mode or os.getenv("RUN_MODE", "record")).lower()  # "record" or "replay"
 SCENARIO_MODE = (CLI_ARGS.scenario or os.getenv("SCENARIO_MODE", "advice_guided")).lower()
 if SCENARIO_MODE not in SCENARIO_CHOICES:
@@ -526,26 +516,8 @@ if RUN_MODE == "replay" and not os.path.exists(REPLAY_LOG_PATH):
 # FIRE DYNAMICS CONFIG
 # =========================
 # Each fire source is a growing circle: r(t) = r0 + growth_m_per_s * (t - t0).
-# FIRE_SOURCES: fires active from t=0.
-# NEW_FIRE_EVENTS: fires that ignite mid-simulation (within the forecast horizon).
-# Coordinates are in SUMO network metres; match against the loaded .net.xml.
-FIRE_SOURCES = [
-    {"id": "F0", "t0": 0.0,   "x": 16805.0, "y": 9380.0, "r0": 500.0, "growth_m_per_s": 0.02},
-    {"id": "F0_1", "t0": 0.0,   "x": 20000.0, "y": 8800.0, "r0": 800.0, "growth_m_per_s": 0.02},
-    {"id": "F0_2", "t0": 0.0,   "x": 20600.0, "y": 10500.0, "r0": 800.0, "growth_m_per_s": 0.02},
-    {"id": "F0_3", "t0": 0.0, "x": 16500.0, "y": 11500.0, "r0": 800.0, "growth_m_per_s": 0.02},
-    {"id": "F0_4", "t0": 0.0, "x": 16200.0, "y": 13000.0, "r0": 800.0, "growth_m_per_s": 0.02},
-    {"id": "F0_5", "t0": 0.0, "x": 18342.0, "y": 9487.0, "r0": 1200.0, "growth_m_per_s": 0.02},
-    {"id": "F0_6", "t0": 0.0, "x": 16350.0, "y": 8905.0, "r0": 500.0, "growth_m_per_s": 0.02},
-    {"id": "F0_7", "t0": 0.0, "x": 17002.0, "y": 15791.0, "r0": 1500.0, "growth_m_per_s": 0.02},
-    {"id": "F0_8", "t0": 0.0, "x": 16348.0, "y": 6801.0, "r0": 400.0, "growth_m_per_s": 0.02},
-
-]
-NEW_FIRE_EVENTS = [
-    # {"id": "F1_1", "t0": 80.0,   "x": 14600.0, "y": 15800.0, "r0": 800.0, "growth_m_per_s": 0.02},
-
-
-]
+# FIRE_SOURCES and NEW_FIRE_EVENTS are loaded from configs/<map>/fires.json
+# after CLI parsing.  Coordinates are in SUMO network metres.
 
 # Risk model params:
 #   FIRE_WARNING_BUFFER_M : extra buffer added to fire radius when classifying edges as blocked.
@@ -1389,6 +1361,7 @@ def _run_parameter_payload() -> Dict[str, Any]:
     """Build the persisted run-parameter snapshot used by post-run plotting tools."""
     return {
         "run_mode": RUN_MODE,
+        "map": CLI_ARGS.map,
         "scenario": SCENARIO_MODE,
         "sim_end_time_s": SIM_END_TIME_S,
         "sumo_binary": SUMO_BINARY,
@@ -1458,9 +1431,9 @@ def _run_parameter_payload() -> Dict[str, Any]:
 # =========================
 Sumo_config = [
     SUMO_BINARY,
-    "-c", os.getenv("SUMO_CFG", "sumo/Repaired.sumocfg"),
+    "-c", os.getenv("SUMO_CFG", _MAP_CFG["map"].get("sumo_cfg", "sumo/Repaired.sumocfg")),
     "--step-length", "0.2", # default: 0.05
-    "--delay", "1000",
+    "--delay", "100",
     "--lateral-resolution", "0.1",
     "--seed", str(SUMO_SEED),
 ]
@@ -1559,7 +1532,7 @@ print(
     f"[SCENARIO] mode={SCENARIO_CONFIG['mode']} title={SCENARIO_CONFIG['title']}"
 )
 print(
-    f"[SUMO] binary={SUMO_BINARY} config={os.getenv('SUMO_CFG', 'sumo/Repaired.sumocfg')}"
+    f"[SUMO] binary={SUMO_BINARY} config={os.getenv('SUMO_CFG', _MAP_CFG['map'].get('sumo_cfg', 'sumo/Repaired.sumocfg'))}"
 )
 
 # =========================
@@ -1589,12 +1562,20 @@ except Exception as e:
     )
 
 EDGE_SHAPE: Dict[str, List[Tuple[float, float]]] = {}
+EDGE_LENGTH: Dict[str, float] = {}
 for e in net.getEdges(withInternal=False):
     lanes = e.getLanes()
     if not lanes:
         continue
     shp = [(float(p[0]), float(p[1])) for p in lanes[0].getShape()]
-    EDGE_SHAPE[e.getID()] = shp
+    eid = e.getID()
+    EDGE_SHAPE[eid] = shp
+    EDGE_LENGTH[eid] = float(e.getLength())
+_all_lengths = [v for v in EDGE_LENGTH.values() if v > 0]
+MEAN_EDGE_LENGTH_M: float = sum(_all_lengths) / len(_all_lengths) if _all_lengths else 100.0
+
+# Clamp any spawn positions that exceed edge length (relevant for compact spawn groups).
+SPAWN_EVENTS = validate_spawn_positions(SPAWN_EVENTS, EDGE_LENGTH)
 
 # Precompute representative (x, y) for each agent's spawn edge.
 # Used as position proxy for pre-departure agents in spatial messaging.
@@ -1724,11 +1705,12 @@ messaging = AgentMessagingBus(
 
 
 def build_driver_briefing(
-    blocked_edges: int,
+    blocked_edges: float,
     risk_sum: float,
     min_margin_m: Optional[float],
     len_edges: int,
     travel_time_s: Optional[float] = None,
+    route_length_m: Optional[float] = None,
     baseline_time_s: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
@@ -1764,7 +1746,15 @@ def build_driver_briefing(
         proximity_phrase = "clear buffer from fire"
         proximity_band = "clear"
 
-    risk_density = (float(risk_sum) / max(1, int(len_edges))) if len_edges > 0 else 1.0
+    # Normalise risk_sum by route length (in units of MEAN_EDGE_LENGTH_M) so
+    # that the density threshold is independent of edge granularity.
+    if route_length_m is not None and route_length_m > 0:
+        _norm = route_length_m / MEAN_EDGE_LENGTH_M
+        risk_density = float(risk_sum) / max(1e-9, _norm)
+    elif len_edges > 0:
+        risk_density = float(risk_sum) / max(1, int(len_edges))
+    else:
+        risk_density = 1.0
     if blocked_edges > 0:
         hazard_band = "critical"
     elif risk_density >= RISK_DENSITY_HIGH:
@@ -2846,13 +2836,16 @@ def process_pending_departures(step_idx: int):
                     continue
 
                 _d_reachable.append(idx)
-                blocked_cnt = 0
+                blocked_cnt = 0.0
                 risk_sum = 0.0
+                route_length_m = 0.0
                 min_margin = float("inf")
                 for e in cand_edges:
                     b, r, m = _dep_edge_risk(e)
-                    blocked_cnt += int(b)
-                    risk_sum += r
+                    w = EDGE_LENGTH.get(e, MEAN_EDGE_LENGTH_M) / MEAN_EDGE_LENGTH_M
+                    blocked_cnt += w if b else 0.0
+                    risk_sum += r * w
+                    route_length_m += EDGE_LENGTH.get(e, MEAN_EDGE_LENGTH_M)
                     if m < min_margin:
                         min_margin = m
                 _d_menu.append({
@@ -2865,6 +2858,7 @@ def process_pending_departures(step_idx: int):
                     "min_margin_m_on_fastest_path": None if not math.isfinite(min_margin) else round(min_margin, 2),
                     "travel_time_s_fastest_path": None if cand_tt is None else round(cand_tt, 2),
                     "len_edges_fastest_path": len(cand_edges),
+                    "route_length_m": round(route_length_m, 2),
                 })
 
             if not _d_reachable:
@@ -2881,12 +2875,13 @@ def process_pending_departures(step_idx: int):
                 if not item.get("reachable"):
                     continue
                 info = build_driver_briefing(
-                    blocked_edges=int(item.get("blocked_edges_on_fastest_path", 0)),
+                    blocked_edges=float(item.get("blocked_edges_on_fastest_path", 0)),
                     risk_sum=float(item.get("risk_sum_on_fastest_path", 0.0)),
                     min_margin_m=item.get("min_margin_m_on_fastest_path"),
                     len_edges=int(item.get("len_edges_fastest_path", 0)),
                     travel_time_s=item.get("travel_time_s_fastest_path"),
                     baseline_time_s=_baseline_tt,
+                    route_length_m=item.get("route_length_m"),
                 )
                 item.update(info)
             annotate_menu_with_expected_utility(
@@ -3673,13 +3668,16 @@ def process_vehicles(step_idx: int):
 
                     reachable_indices.append(idx)
 
-                    blocked_cnt = 0
+                    blocked_cnt = 0.0
                     risk_sum = 0.0
+                    route_length_m = 0.0
                     min_margin = float("inf")
                     for e in cand_edges:
                         b, r, m = edge_risk(e)
-                        blocked_cnt += int(b)
-                        risk_sum += r
+                        w = EDGE_LENGTH.get(e, MEAN_EDGE_LENGTH_M) / MEAN_EDGE_LENGTH_M
+                        blocked_cnt += w if b else 0.0
+                        risk_sum += r * w
+                        route_length_m += EDGE_LENGTH.get(e, MEAN_EDGE_LENGTH_M)
                         if m < min_margin:
                             min_margin = m
 
@@ -3693,6 +3691,7 @@ def process_vehicles(step_idx: int):
                         "min_margin_m_on_fastest_path": None if not math.isfinite(min_margin) else round(min_margin, 2),
                         "travel_time_s_fastest_path": None if cand_tt is None else round(cand_tt, 2),
                         "len_edges_fastest_path": len(cand_edges),
+                        "route_length_m": round(route_length_m, 2),
                         "_fastest_path_edges": cand_edges,
                     })
 
@@ -3720,12 +3719,13 @@ def process_vehicles(step_idx: int):
                     if not item.get("reachable"):
                         continue
                     info = build_driver_briefing(
-                        blocked_edges=int(item.get("blocked_edges_on_fastest_path", 0)),
+                        blocked_edges=float(item.get("blocked_edges_on_fastest_path", 0)),
                         risk_sum=float(item.get("risk_sum_on_fastest_path", 0.0)),
                         min_margin_m=item.get("min_margin_m_on_fastest_path"),
                         len_edges=int(item.get("len_edges_fastest_path", 0)),
                         travel_time_s=item.get("travel_time_s_fastest_path"),
                         baseline_time_s=baseline_time_s,
+                        route_length_m=item.get("route_length_m"),
                     )
                     item.update(info)
 
@@ -4218,13 +4218,16 @@ def process_vehicles(step_idx: int):
                 menu = []
                 for idx, rt in enumerate(ROUTE_LIBRARY):
                     edges = list(rt["edges"])
-                    blocked_cnt = 0
+                    blocked_cnt = 0.0
                     risk_sum = 0.0
+                    route_length_m = 0.0
                     min_margin = float("inf")
                     for e in edges:
                         b, r, m = edge_risk(e)
-                        blocked_cnt += int(b)
-                        risk_sum += r
+                        w = EDGE_LENGTH.get(e, MEAN_EDGE_LENGTH_M) / MEAN_EDGE_LENGTH_M
+                        blocked_cnt += w if b else 0.0
+                        risk_sum += r * w
+                        route_length_m += EDGE_LENGTH.get(e, MEAN_EDGE_LENGTH_M)
                         if m < min_margin:
                             min_margin = m
                     menu.append({
@@ -4234,16 +4237,18 @@ def process_vehicles(step_idx: int):
                         "risk_sum": round(risk_sum, 4),
                         "min_margin_m": None if not math.isfinite(min_margin) else round(min_margin, 2),
                         "len_edges": len(edges),
+                        "route_length_m": round(route_length_m, 2),
                     })
 
                 for item in menu:
                     info = build_driver_briefing(
-                        blocked_edges=int(item.get("blocked_edges", 0)),
+                        blocked_edges=float(item.get("blocked_edges", 0)),
                         risk_sum=float(item.get("risk_sum", 0.0)),
                         min_margin_m=item.get("min_margin_m"),
                         len_edges=int(item.get("len_edges", 0)),
                         travel_time_s=None,
                         baseline_time_s=None,
+                        route_length_m=item.get("route_length_m"),
                     )
                     item.update(info)
                 annotate_menu_with_expected_utility(

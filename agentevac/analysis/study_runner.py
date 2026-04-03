@@ -94,6 +94,7 @@ def run_study(
     messaging_enabled: bool = True,
     weights: Optional[Dict[str, float]] = None,
     top_k: int = 5,
+    map_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run a complete parameter calibration study: sweep → fit → report.
 
@@ -115,6 +116,7 @@ def run_study(
         messaging_enabled: Whether inter-agent messaging is active for all cases.
         weights: Per-metric calibration weight overrides.
         top_k: Number of top-ranked candidates to include in the calibration report.
+        map_name: Map config directory name (e.g., ``"lytton"`` or ``"halifax"``).
 
     Returns:
         A study summary dict containing timing information, case counts, file paths,
@@ -143,6 +145,7 @@ def run_study(
         sumo_binary=sumo_binary,
         run_mode=run_mode,
         timeout_s=timeout_s,
+        map_name=map_name,
     )
     finished_experiments_at = time.time()
 
@@ -220,6 +223,7 @@ def _parse_args() -> argparse.Namespace:
         help="Comma-separated calibration weights, e.g. average_travel_time=2.0,route_choice_entropy=0.5",
     )
     parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument("--map", default=None, help="Map config directory name (e.g., 'lytton').")
     return parser.parse_args()
 
 
@@ -240,6 +244,7 @@ def main() -> int:
         messaging_enabled=(args.messaging == "on"),
         weights=_parse_weights(args.weights),
         top_k=args.top_k,
+        map_name=args.map,
     )
     print(f"[STUDY] dir={summary['study_dir']}")
     print(

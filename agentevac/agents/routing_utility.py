@@ -13,8 +13,10 @@ where:
     - ``C(option)`` : travel cost in equivalent minutes (``_travel_cost``).
 
 Expected exposure combines four components (in ``alert_guided`` and ``advice_guided``):
-    1. **risk_sum** : Sum of edge-level fire risk scores along the route (or fastest path).
-       Scaled by a severity multiplier that increases with ``p_risky`` and ``p_danger``.
+    1. **risk_density** : Average edge-level fire risk (``risk_sum / len_edges``).
+       Normalising by edge count ensures that the same physical road scores
+       identically regardless of SUMO edge granularity.  The density is scaled
+       by a severity multiplier that increases with ``p_risky`` and ``p_danger``.
     2. **blocked_edges** : Number of edges along the route that are currently inside a
        fire perimeter.  Each blocked edge adds a heavy fixed penalty (8.0) because
        a blocked edge typically makes the route impassable.
@@ -95,8 +97,9 @@ def _travel_cost(menu_item: Dict[str, Any]) -> float:
     """Estimate travel cost in equivalent minutes for a menu option.
 
     Prefers ``travel_time_s_fastest_path`` (converted to minutes) when available.
-    Falls back to an edge-count heuristic (each edge ≈ 0.25 min) using
-    ``len_edges`` or ``len_edges_fastest_path``.
+    Falls back to a route-length heuristic (assuming ~40 km/h average speed) using
+    ``route_length_m``.  If route_length_m is also unavailable, falls back to
+    ``len_edges`` (each edge ≈ 0.25 min).
 
     Args:
         menu_item: A destination or route dict from the menu library.
@@ -107,6 +110,10 @@ def _travel_cost(menu_item: Dict[str, Any]) -> float:
     travel_time = menu_item.get("travel_time_s_fastest_path")
     if travel_time is not None:
         return _num(travel_time, 0.0) / 60.0
+    route_length = menu_item.get("route_length_m")
+    if route_length is not None:
+        # ~40 km/h average → 667 m/min
+        return _num(route_length, 0.0) / 667.0
     edge_count = menu_item.get("len_edges")
     if edge_count is None:
         edge_count = menu_item.get("len_edges_fastest_path")
@@ -162,11 +169,16 @@ def _observation_based_exposure(
     if travel_time_s is not None:
         length_factor = _num(travel_time_s, 60.0) / 60.0 * 0.3
     else:
-        len_edges = _num(
-            menu_item.get("len_edges", menu_item.get("len_edges_fastest_path")),
-            1.0,
-        )
-        length_factor = len_edges * 0.15
+        route_length = menu_item.get("route_length_m")
+        if route_length is not None:
+            # Convert metres to equivalent minutes at ~40 km/h, then scale.
+            length_factor = _num(route_length, 100.0) / 667.0 * 0.3
+        else:
+            len_edges = _num(
+                menu_item.get("len_edges", menu_item.get("len_edges_fastest_path")),
+                1.0,
+            )
+            length_factor = len_edges * 0.15
     uncertainty_penalty = max(0.0, 1.0 - confidence) * 0.75
 
     # Visual fire observation penalty: present only for the agent's current
@@ -204,10 +216,20 @@ def _expected_exposure(
     Formula:
         severity_scale = 1 + 0.8 * p_risky + 1.6 * p_danger + 0.6 * perceived_risk
         uncertainty_penalty = max(0, 1 - confidence) * 0.75
-        exposure = risk_sum * severity_scale
+        risk_density = risk_sum / len_edges
+        exposure = risk_density * severity_scale
                    + blocked_edges * 8.0
                    + margin_penalty(min_margin_m)
                    + uncertainty_penalty
+
+    ``risk_sum`` is the additive accumulation of per-edge fire risk scores.  Because
+    SUMO edge granularity is an artefact of the network file — the same physical road
+    may be split into 10 or 100 edges — we normalise by the number of edges to obtain
+    the *average risk per edge* (``risk_density``).  This makes the exposure metric
+    invariant to edge-count differences across routes of identical geometry.  The
+    travel-time cost (via ``lambda_t * travel_cost``) already penalises longer routes
+    separately, so the risk term only needs to capture *how close to fire the route
+    passes on average*.
 
     Weight rationale:
         - ``p_danger`` coefficient (1.6) > ``p_risky`` (0.8): danger is penalised
@@ -231,19 +253,24 @@ def _expected_exposure(
     risk_sum = _num(menu_item.get("risk_sum", menu_item.get("risk_sum_on_fastest_path")), 0.0)
     blocked_edges = _num(menu_item.get("blocked_edges", menu_item.get("blocked_edges_on_fastest_path")), 0.0)
     min_margin_m = menu_item.get("min_margin_m", menu_item.get("min_margin_m_on_fastest_path"))
+    len_edges = _num(
+        menu_item.get("len_edges", menu_item.get("len_edges_fastest_path")),
+        1.0,
+    )
+    risk_density = risk_sum / max(1.0, len_edges)
 
     p_risky = _num(belief.get("p_risky"), 1.0 / 3.0)
     p_danger = _num(belief.get("p_danger"), 1.0 / 3.0)
     perceived_risk = _num(psychology.get("perceived_risk"), p_danger)
     confidence = _num(psychology.get("confidence"), 0.0)
 
-    # Severity scale: amplifies risk_sum based on how dangerous the agent believes things are.
+    # Severity scale: amplifies risk based on how dangerous the agent believes things are.
     severity_scale = 1.0 + (0.8 * p_risky) + (1.6 * p_danger) + (0.6 * perceived_risk)
     # Uncertainty penalty: less confident agents should avoid options that are already risky.
     uncertainty_penalty = max(0.0, 1.0 - confidence) * 0.75
 
     return (
-        risk_sum * severity_scale
+        risk_density * severity_scale
         + (blocked_edges * 8.0)
         + _effective_margin_penalty(min_margin_m)
         + uncertainty_penalty

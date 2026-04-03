@@ -166,6 +166,7 @@ def run_experiment_case(
     run_mode: str = "record",
     timeout_s: Optional[float] = None,
     sumo_seed: Optional[int] = None,
+    map_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Execute one parameter-grid case by spawning a simulation subprocess.
 
@@ -220,6 +221,9 @@ def run_experiment_case(
 
     messaging_enabled = bool(case_cfg.get("messaging_enabled", True))
     cmd.extend(["--messaging", "on" if messaging_enabled else "off"])
+    _map = map_name or case_cfg.get("map_name")
+    if _map:
+        cmd.extend(["--map", str(_map)])
     print(f"[SIM_CLI] case_id={case_id} {_format_cmd(cmd[2:])}")
 
     env = os.environ.copy()
@@ -289,6 +293,7 @@ def run_parameter_sweep(
     run_mode: str = "record",
     timeout_s: Optional[float] = None,
     sumo_seed: Optional[int] = None,
+    map_name: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Run all cases in the experiment grid sequentially.
 
@@ -303,6 +308,7 @@ def run_parameter_sweep(
         sumo_binary: SUMO binary name.
         run_mode: ``"record"`` or ``"replay"``.
         timeout_s: Per-case subprocess timeout in seconds.
+        map_name: Map config directory name (e.g., ``"lytton"``).
 
     Returns:
         List of result dicts (one per grid case) from ``run_experiment_case``.
@@ -322,6 +328,7 @@ def run_parameter_sweep(
                 run_mode=run_mode,
                 timeout_s=timeout_s,
                 sumo_seed=sumo_seed,
+                map_name=map_name,
             )
         )
     return results
