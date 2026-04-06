@@ -503,7 +503,7 @@ if not (0.0 <= DEFAULT_SOCIAL_MIN_DANGER <= 1.0):
 if MAX_SYSTEM_OBSERVATIONS < 1:
     sys.exit("MAX_SYSTEM_OBSERVATIONS must be >= 1.")
 # Determinism (recommended)
-SUMO_SEED = os.getenv("SUMO_SEED", "260313")
+SUMO_SEED = os.getenv("SUMO_SEED", "42")
 os.makedirs(os.path.dirname(REPLAY_LOG_PATH) or ".", exist_ok=True)
 if RUN_MODE == "replay" and not os.path.exists(REPLAY_LOG_PATH):
     sys.exit(
@@ -1364,6 +1364,7 @@ def _run_parameter_payload() -> Dict[str, Any]:
         "map": CLI_ARGS.map,
         "scenario": SCENARIO_MODE,
         "sim_end_time_s": SIM_END_TIME_S,
+        "sumo_seed": SUMO_SEED,
         "sumo_binary": SUMO_BINARY,
         "messaging_controls": {
             "enabled": MESSAGING_ENABLED,
