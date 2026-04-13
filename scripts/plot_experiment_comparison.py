@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 from typing import Any
 
@@ -57,11 +58,41 @@ def _metrics_row(metrics: dict[str, Any]) -> dict[str, float]:
     }
 
 
+SCENARIO_ORDER: tuple[str, ...] = ("no_notice", "alert_guided", "advice_guided", "unknown")
+SCENARIO_COLORS: dict[str, str] = {
+    "no_notice": "#E45756",
+    "alert_guided": "#F58518",
+    "advice_guided": "#4C78A8",
+    "unknown": "#777777",
+}
+
+
+_FILENAME_PARAM_RE = re.compile(
+    r"scn-(?P<scenario>[A-Za-z0-9_]+?)"
+    r"_sigma-(?P<info_sigma>-?\d+(?:\.\d+)?)"
+    r"_delay-(?P<info_delay_s>-?\d+(?:\.\d+)?)"
+    r"_trust-(?P<theta_trust>-?\d+(?:\.\d+)?)"
+)
+
+
+def _params_from_filename(path: Path) -> dict[str, Any]:
+    """Recover sweep parameters encoded in a metrics filename."""
+    match = _FILENAME_PARAM_RE.search(path.stem)
+    if not match:
+        return {}
+    return {
+        "scenario": match.group("scenario"),
+        "info_sigma": _safe_float(match.group("info_sigma")),
+        "info_delay_s": _safe_float(match.group("info_delay_s")),
+        "theta_trust": _safe_float(match.group("theta_trust")),
+    }
+
+
 def _param_metadata(path: Path) -> dict[str, Any]:
     """Load companion run parameters for plots that only have KPI JSON files."""
     params_path = resolve_optional_run_params(None, path)
     if params_path is None:
-        return {}
+        return _params_from_filename(path)
     payload = load_json(params_path)
     cognition = payload.get("cognition") or {}
     return {
@@ -101,7 +132,10 @@ def load_cases(results_json: Path | None, metrics_glob: str) -> tuple[list[dict[
             rows.append(row)
         return rows, results_json
 
-    matches = sorted(Path().glob(metrics_glob))
+    matches = [
+        path for path in sorted(Path().glob(metrics_glob))
+        if not path.stem.endswith("_profiles")
+    ]
     if not matches:
         raise SystemExit(f"No metrics files match pattern: {metrics_glob}")
     for path in matches:
@@ -121,12 +155,6 @@ def load_cases(results_json: Path | None, metrics_glob: str) -> tuple[list[dict[
 
 
 def _scatter_by_scenario(ax, rows: list[dict[str, Any]]) -> None:
-    scenario_colors = {
-        "no_notice": "#E45756",
-        "alert_guided": "#F58518",
-        "advice_guided": "#4C78A8",
-        "unknown": "#777777",
-    }
     seen = set()
     for row in rows:
         scenario = str(row.get("scenario", "unknown"))
@@ -137,7 +165,7 @@ def _scatter_by_scenario(ax, rows: list[dict[str, Any]]) -> None:
             row["hazard_exposure"],
             row["avg_travel_time"],
             s=size,
-            color=scenario_colors.get(scenario, "#777777"),
+            color=SCENARIO_COLORS.get(scenario, SCENARIO_COLORS["unknown"]),
             alpha=0.85,
             label=label,
         )
