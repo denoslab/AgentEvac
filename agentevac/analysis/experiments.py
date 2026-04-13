@@ -202,6 +202,7 @@ def run_experiment_case(
     case_id = str(case_cfg.get("case_id") or _case_id(case_cfg, case_index))
     replay_base = out_dir / f"routes_{case_id}.jsonl"
     metrics_base = out_dir / f"metrics_{case_id}.json"
+    params_base = out_dir / f"run_params_{case_id}.json"
     stdout_log = out_dir / f"stdout_{case_id}.log"
 
     cmd = [
@@ -217,6 +218,7 @@ def run_experiment_case(
         "--metrics", "on",
         "--replay-log-path", str(replay_base),
         "--metrics-log-path", str(metrics_base),
+        "--params-log-path", str(params_base),
     ]
 
     messaging_enabled = bool(case_cfg.get("messaging_enabled", True))
