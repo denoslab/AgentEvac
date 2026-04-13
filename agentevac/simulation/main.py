@@ -63,11 +63,13 @@ from agentevac.agents.agent_state import (
     append_social_history,
     append_decision_history,
     append_observation_history,
+    append_institutional_history,
     snapshot_agent_state,
 )
 from agentevac.agents.information_model import (
     sample_environment_signal,
     apply_signal_delay,
+    apply_institutional_delay,
     build_social_signal,
 )
 from agentevac.agents.belief_model import update_agent_belief
@@ -132,6 +134,7 @@ CONTROL_MODE = "destination"
 # OpenAI model + decision cadence
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 DECISION_PERIOD_S = float(os.getenv("DECISION_PERIOD_S", "60.0"))  # LLM may change decisions each period; (simu sec.)
+MAX_CONCURRENT_LLM = int(os.environ.get("MAX_CONCURRENT_LLM", "50"))
 
 # Route and destination libraries are loaded from the map config (configs/<map>/),
 # populated after CLI parsing below.  Declared here so downstream references resolve.
@@ -1363,9 +1366,15 @@ def _run_parameter_payload() -> Dict[str, Any]:
         "run_mode": RUN_MODE,
         "map": CLI_ARGS.map,
         "scenario": SCENARIO_MODE,
+        "control_mode": CONTROL_MODE,
         "sim_end_time_s": SIM_END_TIME_S,
+        "decision_period_s": DECISION_PERIOD_S,
+        "openai_model": OPENAI_MODEL,
+        "max_concurrent_llm": MAX_CONCURRENT_LLM,
         "sumo_seed": SUMO_SEED,
         "sumo_binary": SUMO_BINARY,
+        "net_file": NET_FILE,
+        "sumo_cfg": os.getenv("SUMO_CFG", _MAP_CFG["map"].get("sumo_cfg", "sumo/Repaired.sumocfg")),
         "messaging_controls": {
             "enabled": MESSAGING_ENABLED,
             "max_message_chars": MAX_MESSAGE_CHARS,
@@ -1387,6 +1396,21 @@ def _run_parameter_payload() -> Dict[str, Any]:
             "delay_heavy_ratio": DELAY_HEAVY_RATIO,
             "caution_min_margin_m": CAUTION_MIN_MARGIN_M,
             "recommended_min_margin_m": RECOMMENDED_MIN_MARGIN_M,
+        },
+        "agent_memory": {
+            "agent_history_rounds": AGENT_HISTORY_ROUNDS,
+            "fire_trend_eps_m": FIRE_TREND_EPS_M,
+            "agent_history_route_head_edges": AGENT_HISTORY_ROUTE_HEAD_EDGES,
+            "visual_lookahead_edges": VISUAL_LOOKAHEAD_EDGES,
+            "fire_perception_range_m": FIRE_PERCEPTION_RANGE_M,
+        },
+        "forecast": {
+            "forecast_horizon_s": FORECAST_HORIZON_S,
+            "forecast_route_head_edges": FORECAST_ROUTE_HEAD_EDGES,
+        },
+        "overlays": {
+            "enabled": OVERLAYS_ENABLED,
+            "max_label_chars": OVERLAY_MAX_LABEL_CHARS,
         },
         "cognition": {
             "info_sigma": INFO_SIGMA,
@@ -1544,7 +1568,6 @@ vehicle_speed = 0
 total_speed = 0
 
 client = OpenAI()  # uses OPENAI_API_KEY
-MAX_CONCURRENT_LLM = int(os.environ.get("MAX_CONCURRENT_LLM", "20"))
 
 _token_lock = threading.Lock()
 _token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "llm_calls": 0}
@@ -2328,11 +2351,10 @@ def process_pending_departures(step_idx: int):
                 sigma_info=INFO_SIGMA,
                 distance_ref_m=DIST_REF_M,
             )
-            env_signal = apply_signal_delay(
-                env_signal_now,
-                agent_state.signal_history,
-                delay_rounds,
-            )
+            # Env signal is always real-time (noise only, no delay).
+            env_signal = dict(env_signal_now)
+            env_signal["is_delayed"] = False
+            env_signal["delay_rounds_applied"] = 0
             predeparture_inbox = messaging.get_inbox(vid) if MESSAGING_ENABLED else []
             social_signal = build_social_signal(
                 vid,
@@ -2374,13 +2396,31 @@ def process_pending_departures(step_idx: int):
                 sim_t,
                 neighborhood_observation=neighborhood_observation,
             )
-            # --- Filter env/forecast/neighborhood for the active scenario regime ---
+            # --- Institutional delay: forecast channel ---
             _pd_forecast_payload = {
                 "summary": dict(forecast_summary),
                 "current_edge": dict(edge_forecast),
                 "route_head": dict(route_forecast),
                 "briefing": forecast_briefing,
             }
+            # Push current institutional snapshot before resolving delay.
+            append_institutional_history(agent_state, {
+                "decision_round": int(decision_round_counter),
+                "forecast": dict(_pd_forecast_payload),
+            })
+            # Resolve what the agent actually sees.
+            if SCENARIO_MODE != "no_notice" and delay_rounds > 0:
+                _inst = apply_institutional_delay(
+                    agent_state.institutional_history, delay_rounds,
+                )
+                if _inst is not None:
+                    _pd_forecast_payload = dict(_inst["forecast"])
+                else:
+                    # Not enough history — no institutional info available yet.
+                    _pd_forecast_payload = {
+                        "available": False,
+                        "briefing": "Official forecast not yet available.",
+                    }
             prompt_env_signal, prompt_forecast = apply_scenario_to_signals(
                 SCENARIO_MODE, env_signal, _pd_forecast_payload,
             )
@@ -2912,17 +2952,41 @@ def process_pending_departures(step_idx: int):
                 profile=_s_agent.profile,
                 scenario=SCENARIO_MODE,
             )
-            _prompt_dest_menu = filter_menu_for_scenario(
-                SCENARIO_MODE, _d_menu, control_mode="destination",
-            )
 
-            # Build forecast prompt filtered by scenario.
-            _, _prompt_fc = apply_scenario_to_signals(SCENARIO_MODE, {}, {
+            # --- Institutional delay: departure-destination forecast + menu ---
+            _dep_fc_payload = {
                 "summary": dict(forecast_summary),
                 "current_edge": dict(_s_edge_fc),
                 "route_head": dict(_s_route_fc),
                 "briefing": str(_s_fc_brief or ""),
+            }
+            append_institutional_history(_s_agent, {
+                "decision_round": int(decision_round_counter),
+                "forecast": dict(_dep_fc_payload),
+                "annotated_menu": [dict(item) for item in _d_menu],
             })
+            _dep_inst_unavailable = False
+            if SCENARIO_MODE != "no_notice" and delay_rounds > 0:
+                _dep_inst = apply_institutional_delay(
+                    _s_agent.institutional_history, delay_rounds,
+                )
+                if _dep_inst is not None:
+                    _dep_fc_payload = dict(_dep_inst["forecast"])
+                    _d_menu = list(_dep_inst.get("annotated_menu", _d_menu))
+                else:
+                    _dep_inst_unavailable = True
+
+            _dep_menu_scenario = "no_notice" if _dep_inst_unavailable else SCENARIO_MODE
+            _prompt_dest_menu = filter_menu_for_scenario(
+                _dep_menu_scenario, _d_menu, control_mode="destination",
+            )
+
+            # Build forecast prompt filtered by scenario.
+            _, _prompt_fc = apply_scenario_to_signals(
+                _dep_menu_scenario, {},
+                {"available": False, "briefing": "Official forecast not yet available."}
+                if _dep_inst_unavailable else _dep_fc_payload,
+            )
 
             # Policy strings (same logic as process_vehicles).
             _util_basis = {
@@ -3468,11 +3532,10 @@ def process_vehicles(step_idx: int):
                 sigma_info=INFO_SIGMA,
                 distance_ref_m=DIST_REF_M,
             )
-            env_signal = apply_signal_delay(
-                env_signal_now,
-                agent_state.signal_history,
-                delay_rounds,
-            )
+            # Env signal is always real-time (noise only, no delay).
+            env_signal = dict(env_signal_now)
+            env_signal["is_delayed"] = False
+            env_signal["delay_rounds_applied"] = 0
             social_signal = build_social_signal(
                 vehicle,
                 inbox_for_vehicle,
@@ -3512,6 +3575,7 @@ def process_vehicles(step_idx: int):
                 "route_head": dict(route_forecast),
                 "briefing": forecast_briefing,
             }
+            # Institutional delay is resolved after menu annotation (see below).
             prompt_env_signal, prompt_forecast = apply_scenario_to_signals(
                 SCENARIO_MODE,
                 env_signal,
@@ -3813,8 +3877,37 @@ def process_vehicles(step_idx: int):
                     profile=agent_state.profile,
                     scenario=SCENARIO_MODE,
                 )
+
+                # --- Institutional delay: forecast + annotated menu ---
+                # Push current snapshot before resolving delay.
+                append_institutional_history(agent_state, {
+                    "decision_round": int(decision_round),
+                    "forecast": dict(scenario_forecast_payload),
+                    "annotated_menu": [dict(item) for item in menu],
+                })
+                # Resolve what the agent actually sees.
+                _inst_unavailable = False
+                if SCENARIO_MODE != "no_notice" and delay_rounds > 0:
+                    _inst = apply_institutional_delay(
+                        agent_state.institutional_history, delay_rounds,
+                    )
+                    if _inst is not None:
+                        # Serve stale forecast and menu from N rounds ago.
+                        scenario_forecast_payload = dict(_inst["forecast"])
+                        prompt_env_signal, prompt_forecast = apply_scenario_to_signals(
+                            SCENARIO_MODE, env_signal, scenario_forecast_payload,
+                        )
+                        menu = list(_inst.get("annotated_menu", menu))
+                    else:
+                        # History too short — no institutional info available yet.
+                        _inst_unavailable = True
+                        prompt_forecast = {
+                            "available": False,
+                            "briefing": "Official forecast not yet available.",
+                        }
+
                 prompt_destination_menu = filter_menu_for_scenario(
-                    SCENARIO_MODE,
+                    "no_notice" if _inst_unavailable else SCENARIO_MODE,
                     menu,
                     control_mode="destination",
                 )
@@ -4281,8 +4374,33 @@ def process_vehicles(step_idx: int):
                     profile=agent_state.profile,
                     scenario=SCENARIO_MODE,
                 )
+
+                # --- Institutional delay: forecast + annotated menu (route mode) ---
+                append_institutional_history(agent_state, {
+                    "decision_round": int(decision_round),
+                    "forecast": dict(scenario_forecast_payload),
+                    "annotated_menu": [dict(item) for item in menu],
+                })
+                _inst_unavailable_rt = False
+                if SCENARIO_MODE != "no_notice" and delay_rounds > 0:
+                    _inst_rt = apply_institutional_delay(
+                        agent_state.institutional_history, delay_rounds,
+                    )
+                    if _inst_rt is not None:
+                        scenario_forecast_payload = dict(_inst_rt["forecast"])
+                        prompt_env_signal, prompt_forecast = apply_scenario_to_signals(
+                            SCENARIO_MODE, env_signal, scenario_forecast_payload,
+                        )
+                        menu = list(_inst_rt.get("annotated_menu", menu))
+                    else:
+                        _inst_unavailable_rt = True
+                        prompt_forecast = {
+                            "available": False,
+                            "briefing": "Official forecast not yet available.",
+                        }
+
                 prompt_route_menu = filter_menu_for_scenario(
-                    SCENARIO_MODE,
+                    "no_notice" if _inst_unavailable_rt else SCENARIO_MODE,
                     menu,
                     control_mode="route",
                 )
