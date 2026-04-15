@@ -60,6 +60,7 @@ class RunMetricsCollector:
             self.path = self._timestamped_path(base_path)
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
 
+        self.total_agents: int = 0
         self._depart_times: Dict[str, float] = {}
         self._arrival_times: Dict[str, float] = {}
         self._last_seen_active: Set[str] = set()
@@ -70,6 +71,7 @@ class RunMetricsCollector:
         self._decision_changes: Dict[str, int] = {}
         self._last_decision_state: Dict[str, str] = {}
         self._final_destination_by_agent: Dict[str, str] = {}
+        self.token_usage: Optional[Dict[str, int]] = None
 
         self._exposure_sum = 0.0
         self._exposure_count = 0
@@ -444,6 +446,7 @@ class RunMetricsCollector:
             "run_mode": self.run_mode,
             "departed_agents": len(self._depart_times),
             "arrived_agents": len(self._arrival_times),
+            "total_agents": self.total_agents,
             "decision_snapshot_count": self._decision_snapshot_count,
             "departure_time_variability": round(self.compute_departure_time_variability(), 6),
             "route_choice_entropy": round(self.compute_route_choice_entropy(), 6),
@@ -452,6 +455,7 @@ class RunMetricsCollector:
             "average_travel_time": self.compute_average_travel_time(),
             "average_signal_conflict": self.compute_average_signal_conflict(),
             "destination_choice_share": self.compute_destination_choice_share(),
+            **({"token_usage": self.token_usage} if self.token_usage else {}),
         }
 
     def export_run_metrics(self, path: Optional[str] = None) -> Optional[str]:

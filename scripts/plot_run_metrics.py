@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
+from typing import Any
 
 try:
     from scripts._plot_common import (
@@ -15,6 +17,11 @@ try:
         resolve_optional_run_params,
         top_items,
     )
+    from scripts.plot_experiment_comparison import (
+        SCENARIO_COLORS,
+        SCENARIO_ORDER,
+        load_cases,
+    )
 except ModuleNotFoundError:
     from _plot_common import (
         ensure_output_path,
@@ -24,6 +31,14 @@ except ModuleNotFoundError:
         resolve_optional_run_params,
         top_items,
     )
+    from plot_experiment_comparison import (
+        SCENARIO_COLORS,
+        SCENARIO_ORDER,
+        load_cases,
+    )
+
+
+_CASE_INDEX_RE = re.compile(r"_(\d{3,})_")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -34,6 +49,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--metrics",
         help="Path to a metrics JSON file. Defaults to the newest outputs/run_metrics_*.json.",
+    )
+    parser.add_argument(
+        "--metrics-glob",
+        help="Glob of metrics JSON files. When set, plots a multi-run KPI comparison "
+             "(2x2 grid of departure variance, route entropy, hazard exposure, avg travel time) "
+             "with bars sorted contiguously by scenario, instead of the single-run dashboard.",
     )
     parser.add_argument(
         "--params",
@@ -155,6 +176,132 @@ def _briefing_summary(params: dict | None) -> str | None:
     )
 
 
+def _kpi_multirun_specs() -> list[dict[str, str]]:
+    """Field/title/color descriptors for the multi-run KPI panels."""
+    return [
+        {
+            "field": "departure_variability",
+            "title": "Departure variance",
+            "ylabel": "Seconds^2",
+            "fmt": "{:.2f}",
+        },
+        {
+            "field": "route_entropy",
+            "title": "Route entropy",
+            "ylabel": "Entropy (nats)",
+            "fmt": "{:.3f}",
+        },
+        {
+            "field": "hazard_exposure",
+            "title": "Hazard exposure",
+            "ylabel": "Average risk score",
+            "fmt": "{:.3f}",
+        },
+        {
+            "field": "avg_travel_time",
+            "title": "Avg travel time",
+            "ylabel": "Seconds",
+            "fmt": "{:.1f}",
+        },
+    ]
+
+
+def _short_run_label(row: dict[str, Any]) -> str:
+    """Return a compact bar label such as ``001`` extracted from the row label."""
+    label = str(row.get("label", ""))
+    match = _CASE_INDEX_RE.search(label)
+    if match:
+        return match.group(1)
+    return label[:12] or "?"
+
+
+def _sort_rows_by_scenario(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sort rows so each scenario forms a contiguous group, then by label."""
+    order_index = {name: i for i, name in enumerate(SCENARIO_ORDER)}
+
+    def key(row: dict[str, Any]) -> tuple[int, str]:
+        scenario = str(row.get("scenario", "unknown"))
+        return (order_index.get(scenario, len(SCENARIO_ORDER)), str(row.get("label", "")))
+
+    return sorted(rows, key=key)
+
+
+def plot_kpi_multirun(
+    rows: list[dict[str, Any]],
+    *,
+    source_path: Path,
+    out_path: Path,
+    show: bool,
+) -> None:
+    """Render a 2x2 KPI comparison across multiple runs, grouped by scenario."""
+    plt = require_matplotlib()
+    if not rows:
+        raise SystemExit("No runs to plot.")
+
+    ordered = _sort_rows_by_scenario(rows)
+    short_labels = [_short_run_label(row) for row in ordered]
+    scenarios = [str(row.get("scenario", "unknown")) for row in ordered]
+    colors = [SCENARIO_COLORS.get(scn, SCENARIO_COLORS["unknown"]) for scn in scenarios]
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle(
+        f"AgentEvac Multi-Run KPIs\n{source_path.name} | runs={len(ordered)}",
+        fontsize=14,
+    )
+
+    for idx, spec in enumerate(_kpi_multirun_specs()):
+        ax = axes[idx // 2, idx % 2]
+        values = [float(row.get(spec["field"], 0.0)) for row in ordered]
+        positions = list(range(len(values)))
+        ax.bar(positions, values, color=colors)
+        ax.set_title(spec["title"], fontsize=11)
+        ax.set_ylabel(spec["ylabel"], fontsize=9)
+        ax.set_xticks(positions)
+        ax.set_xticklabels(short_labels, rotation=60, ha="right", fontsize=8)
+        ax.grid(axis="y", linestyle=":", alpha=0.35)
+        ymax = max(values) if values else 0.0
+        ymin = min(values) if values else 0.0
+        if ymax > 0.0:
+            ax.set_ylim(min(0.0, ymin * 1.1), ymax * 1.18)
+        for pos, val in zip(positions, values):
+            ax.text(
+                pos,
+                val if val >= 0.0 else 0.0,
+                spec["fmt"].format(val),
+                ha="center",
+                va="bottom",
+                fontsize=7,
+                rotation=0,
+            )
+
+    seen_scenarios: list[str] = []
+    for scn in scenarios:
+        if scn not in seen_scenarios:
+            seen_scenarios.append(scn)
+    ordered_legend = [scn for scn in SCENARIO_ORDER if scn in seen_scenarios]
+    handles = [
+        plt.Rectangle((0, 0), 1, 1, color=SCENARIO_COLORS.get(scn, SCENARIO_COLORS["unknown"]))
+        for scn in ordered_legend
+    ]
+    if handles:
+        fig.legend(
+            handles,
+            ordered_legend,
+            loc="lower center",
+            ncol=len(ordered_legend),
+            frameon=False,
+            fontsize=9,
+        )
+
+    fig.tight_layout(rect=(0, 0.05, 1, 0.95))
+    fig.savefig(out_path, dpi=160, bbox_inches="tight")
+    print(f"[PLOT] source={source_path}")
+    print(f"[PLOT] output={out_path}")
+    if show:
+        plt.show()
+    plt.close(fig)
+
+
 def plot_metrics_dashboard(
     metrics_path: Path,
     *,
@@ -225,6 +372,16 @@ def plot_metrics_dashboard(
 def main() -> None:
     """CLI entry point for the run-metrics dashboard."""
     args = _parse_args()
+    if args.metrics_glob:
+        rows, source_path = load_cases(None, args.metrics_glob)
+        out_path = ensure_output_path(source_path, args.out, suffix="kpi_comparison")
+        plot_kpi_multirun(
+            rows,
+            source_path=source_path,
+            out_path=out_path,
+            show=args.show,
+        )
+        return
     metrics_path = resolve_input(args.metrics, "outputs/run_metrics_*.json")
     params_path = resolve_optional_run_params(args.params, metrics_path)
     out_path = ensure_output_path(metrics_path, args.out, suffix="dashboard")

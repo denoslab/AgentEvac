@@ -47,11 +47,14 @@ class AgentRuntimeState:
             derived fields (entropy, entropy_norm, uncertainty_bucket).
         psychology: Scalar summaries derived from the belief (perceived_risk, confidence).
         signal_history: Bounded list of recent environment signals (noisy margin observations).
-            Used by the delay model to replay stale observations.
         social_history: Bounded list of recent social signals derived from inbox messages.
         decision_history: Bounded list of past decision records (predeparture + routing).
             Passed to the LLM as ``agent_self_history`` so agents can avoid repeated mistakes.
         observation_history: Bounded list of system-generated local neighborhood observations.
+        institutional_history: Bounded list of institutional snapshots (forecast + annotated
+            menu) pushed each decision round.  Used by
+            ``information_model.apply_institutional_delay`` to serve stale official
+            information when ``INFO_DELAY_S > 0``.
         has_departed: True once the vehicle has been added to the SUMO simulation.
     """
 
@@ -65,6 +68,7 @@ class AgentRuntimeState:
     social_history: List[Dict[str, Any]] = field(default_factory=list)
     decision_history: List[Dict[str, Any]] = field(default_factory=list)
     observation_history: List[Dict[str, Any]] = field(default_factory=list)
+    institutional_history: List[Dict[str, Any]] = field(default_factory=list)
     has_departed: bool = True
     last_input_hash: Optional[int] = None
     last_llm_choice_idx: Optional[int] = None
@@ -237,9 +241,7 @@ def append_signal_history(
 ) -> None:
     """Append an environment signal record to the agent's signal history.
 
-    The history is bounded to ``max_items`` entries (default 16).  The delay model in
-    ``information_model.apply_signal_delay`` uses this history to retrieve stale
-    observations when ``INFO_DELAY_S > 0``.
+    The history is bounded to ``max_items`` entries (default 16).
 
     Args:
         state: The agent whose history to update.
@@ -307,6 +309,26 @@ def append_observation_history(
     _append_bounded(state.observation_history, observation, max_items)
 
 
+def append_institutional_history(
+    state: AgentRuntimeState,
+    snapshot: Dict[str, Any],
+    *,
+    max_items: int = 16,
+) -> None:
+    """Append an institutional snapshot to the agent's institutional history.
+
+    Each snapshot contains the forecast and annotated destination/route menu
+    produced for that decision round.  Used by ``apply_institutional_delay``
+    to serve stale official information when ``INFO_DELAY_S > 0``.
+
+    Args:
+        state: The agent whose history to update.
+        snapshot: Dict with ``forecast`` and ``annotated_menu`` keys.
+        max_items: Maximum number of snapshots to retain.
+    """
+    _append_bounded(state.institutional_history, snapshot, max_items)
+
+
 def snapshot_agent_state(state: AgentRuntimeState) -> Dict[str, Any]:
     """Serialize an ``AgentRuntimeState`` to a plain dict for logging or replay.
 
@@ -331,5 +353,6 @@ def snapshot_agent_state(state: AgentRuntimeState) -> Dict[str, Any]:
         "social_history": [dict(item) for item in state.social_history],
         "decision_history": [dict(item) for item in state.decision_history],
         "observation_history": [dict(item) for item in state.observation_history],
+        "institutional_history": [dict(item) for item in state.institutional_history],
         "has_departed": bool(state.has_departed),
     }

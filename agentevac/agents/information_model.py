@@ -1,14 +1,24 @@
-"""Information sensing and social signal processing for evacuation agents.
+"""Information sensing, institutional delay, and social signal processing for evacuation agents.
 
-This module handles the two information streams available to each agent each decision round:
+This module handles the information streams available to each agent each decision round:
 
 **Environmental signals** (``sample_environment_signal``):
     The agent observes the closest fire margin on its current edge and the minimum margin
     across the head of its planned route.  Gaussian noise (``sigma_info`` metres, std-dev)
     is injected to model imperfect sensing — e.g., smoke obscuring visibility or GPS
-    inaccuracy.  An optional delay (``INFO_DELAY_S`` seconds, converted to ``delay_rounds``)
-    is applied by replaying a stale record from the agent's signal history, simulating
-    delayed emergency broadcasts or slow rumour propagation.
+    inaccuracy.  Environmental signals are always **real-time** — personal observation
+    has no institutional delay.
+
+**Institutional delay** (``apply_institutional_delay``):
+    Official information channels (fire forecasts, route guidance, advisory labels,
+    expected-utility scores) are subject to ``INFO_DELAY_S`` seconds of institutional
+    delay.  When ``delay_rounds > 0``, the agent receives a stale snapshot from
+    ``delay_rounds`` decision periods ago.  When the agent's history is too short
+    (i.e., fewer rounds have elapsed than the delay), **no institutional information
+    is available** — the agent operates as if in a ``no_notice`` regime on that channel.
+    This models the real-world lag in emergency management information production and
+    dissemination.  In ``no_notice`` mode the institutional channel is already invisible,
+    so the delay has no additional effect.
 
 **Social signals** (``build_social_signal``):
     Peer messages from the agent's inbox are parsed with a simple keyword-vote approach.
@@ -148,6 +158,46 @@ def apply_signal_delay(
     out["is_delayed"] = False
     out["delay_rounds_applied"] = 0
     return out
+
+
+def apply_institutional_delay(
+    history: List[Dict[str, Any]],
+    delay_rounds: int,
+) -> Optional[Dict[str, Any]]:
+    """Resolve the institutional snapshot the agent should see this round.
+
+    Institutional snapshots contain official forecast and annotated menu data
+    pushed each decision round.  When ``delay_rounds > 0``, the agent receives
+    the snapshot from ``delay_rounds`` periods ago.
+
+    Unlike ``apply_signal_delay``, this function returns ``None`` when the
+    history is too short — the agent has not yet accumulated enough rounds for
+    the first delayed report to arrive.  The caller should treat ``None`` as
+    "no institutional information available" and present a ``no_notice``-grade
+    view to the agent.
+
+    Args:
+        history: The agent's bounded ``institutional_history`` list (oldest-first).
+        delay_rounds: Number of decision periods of institutional lag.
+            When 0, returns ``None`` — caller should use the current (real-time)
+            snapshot directly.
+
+    Returns:
+        A stale institutional snapshot dict when available, or ``None`` when
+        either ``delay_rounds == 0`` (use current) or history is too short
+        (information not yet available).
+    """
+    delay = max(0, int(delay_rounds))
+    if delay <= 0:
+        # No delay — caller uses the current snapshot directly.
+        return None
+    if delay <= len(history):
+        snapshot = dict(history[-delay])
+        snapshot["is_delayed"] = True
+        snapshot["delay_rounds_applied"] = delay
+        return snapshot
+    # History too short — institutional information has not arrived yet.
+    return None
 
 
 def sample_environment_signal(

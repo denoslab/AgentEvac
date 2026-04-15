@@ -57,6 +57,54 @@ def build_parameter_log_path(base_path: str, *, reference_path: Optional[str | P
     return str(candidate)
 
 
+class _CompactLeafEncoder(json.JSONEncoder):
+    """JSON encoder that renders dicts of only scalar values on a single line.
+
+    Nested structures are indented normally, but "leaf" dicts (whose values are
+    all str, int, float, bool, or None) are kept compact so they can be directly
+    copy-pasted as Python dict literals.
+    """
+
+    def __init__(self, **kw):
+        self._sort_keys = kw.pop("sort_keys", False)
+        kw.pop("indent", None)  # we handle indentation ourselves
+        super().__init__(**kw)
+        self._indent = "  "
+
+    def encode(self, o):
+        return self._fmt(o, 0)
+
+    @staticmethod
+    def _is_leaf_dict(d):
+        return isinstance(d, dict) and all(
+            isinstance(v, (str, int, float, bool, type(None))) for v in d.values()
+        )
+
+    def _fmt(self, o, level):
+        ind = self._indent * level
+        ind1 = self._indent * (level + 1)
+        if isinstance(o, dict):
+            if self._is_leaf_dict(o):
+                keys = sorted(o) if self._sort_keys else list(o)
+                pairs = ", ".join(
+                    f"{json.dumps(k)}: {json.dumps(o[k], ensure_ascii=False)}"
+                    for k in keys
+                )
+                return "{" + pairs + "}"
+            keys = sorted(o) if self._sort_keys else list(o)
+            items = ",\n".join(
+                f"{ind1}{json.dumps(k)}: {self._fmt(o[k], level + 1)}"
+                for k in keys
+            )
+            return "{\n" + items + f"\n{ind}}}"
+        if isinstance(o, list):
+            if not o:
+                return "[]"
+            items = ",\n".join(f"{ind1}{self._fmt(item, level + 1)}" for item in o)
+            return "[\n" + items + f"\n{ind}]"
+        return json.dumps(o, ensure_ascii=False)
+
+
 def write_run_parameter_log(
     base_path: str,
     payload: Mapping[str, Any],
@@ -67,7 +115,7 @@ def write_run_parameter_log(
     target = Path(build_parameter_log_path(base_path, reference_path=reference_path))
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("w", encoding="utf-8") as fh:
-        json.dump(dict(payload), fh, ensure_ascii=False, indent=2, sort_keys=True)
+        fh.write(_CompactLeafEncoder(sort_keys=True, ensure_ascii=False).encode(dict(payload)))
         fh.write("\n")
     return str(target)
 

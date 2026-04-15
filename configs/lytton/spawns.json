@@ -1,0 +1,41 @@
+[
+  {"veh_id": "veh1_1", "spawn_edge": "42006672",     "dest_edge": "E#S2", "depart_time": 0.0,  "lane": "first", "pos": "10", "speed": "max", "color": [255, 0, 0, 255]},
+  {"veh_id": "veh1_2", "spawn_edge": "42006672",     "dest_edge": "E#S2", "depart_time": 5.0,  "lane": "first", "pos": "10", "speed": "max", "color": [0, 0, 255, 255]},
+  {"veh_id": "veh1_3", "spawn_edge": "42006672",     "dest_edge": "E#S2", "depart_time": 10.0, "lane": "first", "pos": "10", "speed": "max", "color": [0, 255, 0, 255]},
+
+  {"veh_id": "veh2_1", "spawn_edge": "42006514#4",   "dest_edge": "E#S2", "depart_time": 0.0,  "lane": "first", "pos": "20", "speed": "max", "color": [255, 0, 0, 255]},
+  {"veh_id": "veh2_2", "spawn_edge": "42006514#4",   "dest_edge": "E#S2", "depart_time": 5.0,  "lane": "first", "pos": "20", "speed": "max", "color": [0, 0, 255, 255]},
+
+  {"veh_id": "veh3_1", "spawn_edge": "-42006515",    "dest_edge": "E#S2", "depart_time": 0.0,  "lane": "first", "pos": "20", "speed": "max", "color": [255, 0, 0, 255]},
+  {"veh_id": "veh3_2", "spawn_edge": "-42006515",    "dest_edge": "E#S2", "depart_time": 5.0,  "lane": "first", "pos": "20", "speed": "max", "color": [0, 0, 255, 255]},
+
+  {"veh_id": "veh4_1", "spawn_edge": "42006515",     "dest_edge": "E#S2", "depart_time": 0.0,  "lane": "first", "pos": "20", "speed": "max", "color": [255, 0, 0, 255]},
+  {"veh_id": "veh4_2", "spawn_edge": "42006515",     "dest_edge": "E#S2", "depart_time": 5.0,  "lane": "first", "pos": "20", "speed": "max", "color": [0, 0, 255, 255]},
+
+  {"veh_id": "veh5_1", "spawn_edge": "42006565",     "dest_edge": "E#S2", "depart_time": 0.0,  "lane": "first", "pos": "20", "speed": "max", "color": [255, 0, 0, 255]},
+  {"veh_id": "veh5_2", "spawn_edge": "42006565",     "dest_edge": "E#S2", "depart_time": 5.0,  "lane": "first", "pos": "20", "speed": "max", "color": [0, 0, 255, 255]},
+
+  {"veh_id": "veh6_1", "spawn_edge": "-42006513#0",  "dest_edge": "E#S2", "depart_time": 0.0,  "lane": "first", "pos": "20", "speed": "max", "color": [255, 0, 0, 255]},
+  {"veh_id": "veh6_2", "spawn_edge": "-42006513#0",  "dest_edge": "E#S2", "depart_time": 5.0,  "lane": "first", "pos": "20", "speed": "max", "color": [0, 0, 255, 255]},
+  {"veh_id": "veh6_3", "spawn_edge": "-42006513#0",  "dest_edge": "E#S2", "depart_time": 10.0, "lane": "first", "pos": "20", "speed": "max", "color": [0, 255, 0, 255]},
+  {"veh_id": "veh6_4", "spawn_edge": "-42006513#0",  "dest_edge": "E#S2", "depart_time": 15.0, "lane": "first", "pos": "20", "speed": "max", "color": [255, 125, 0, 255]},
+  {"veh_id": "veh6_5", "spawn_edge": "-42006513#0",  "dest_edge": "E#S2", "depart_time": 20.0, "lane": "first", "pos": "20", "speed": "max", "color": [125, 255, 0, 255]},
+
+  {"veh_id": "veh7_1", "spawn_edge": "42006504#1",   "dest_edge": "E#S2", "depart_time": 0.0,  "lane": "first", "pos": "20", "speed": "max", "color": [255, 0, 0, 255]},
+  {"veh_id": "veh7_2", "spawn_edge": "42006504#1",   "dest_edge": "E#S2", "depart_time": 5.0,  "lane": "first", "pos": "20", "speed": "max", "color": [0, 0, 255, 255]},
+  {"veh_id": "veh7_3", "spawn_edge": "42006504#1",   "dest_edge": "E#S2", "depart_time": 10.0, "lane": "first", "pos": "20", "speed": "max", "color": [0, 255, 0, 255]},
+
+  {"veh_id": "veh8_1", "spawn_edge": "42006513#0",   "dest_edge": "E#S2", "depart_time": 0.0,  "lane": "first", "pos": "20", "speed": "max", "color": [255, 0, 0, 255]},
+  {"veh_id": "veh8_2", "spawn_edge": "42006513#0",   "dest_edge": "E#S2", "depart_time": 5.0,  "lane": "first", "pos": "20", "speed": "max", "color": [0, 0, 255, 255]},
+  {"veh_id": "veh8_3", "spawn_edge": "42006513#0",   "dest_edge": "E#S2", "depart_time": 10.0, "lane": "first", "pos": "20", "speed": "max", "color": [0, 255, 0, 255]},
+  {"veh_id": "veh8_4", "spawn_edge": "42006513#0",   "dest_edge": "E#S2", "depart_time": 15.0, "lane": "first", "pos": "20", "speed": "max", "color": [255, 125, 0, 255]},
+  {"veh_id": "veh8_5", "spawn_edge": "42006513#0",   "dest_edge": "E#S2", "depart_time": 20.0, "lane": "first", "pos": "20", "speed": "max", "color": [125, 255, 0, 255]},
+
+  {"veh_id": "veh9_1", "spawn_edge": "-42006719#1",  "dest_edge": "E#S2", "depart_time": 0.0,  "lane": "first", "pos": "20", "speed": "max", "color": [255, 0, 0, 255]},
+  {"veh_id": "veh9_2", "spawn_edge": "-42006719#1",  "dest_edge": "E#S2", "depart_time": 5.0,  "lane": "first", "pos": "20", "speed": "max", "color": [0, 0, 255, 255]},
+  {"veh_id": "veh9_3", "spawn_edge": "-42006719#1",  "dest_edge": "E#S2", "depart_time": 10.0, "lane": "first", "pos": "20", "speed": "max", "color": [0, 255, 0, 255]},
+  {"veh_id": "veh9_4", "spawn_edge": "-42006719#1",  "dest_edge": "E#S2", "depart_time": 15.0, "lane": "first", "pos": "20", "speed": "max", "color": [255, 125, 0, 255]},
+  {"veh_id": "veh9_5", "spawn_edge": "-42006719#1",  "dest_edge": "E#S2", "depart_time": 20.0, "lane": "first", "pos": "20", "speed": "max", "color": [125, 255, 0, 255]},
+  {"veh_id": "veh9_6", "spawn_edge": "-42006719#1",  "dest_edge": "E#S2", "depart_time": 25.0, "lane": "first", "pos": "20", "speed": "max", "color": [0, 255, 255, 255]},
+  {"veh_id": "veh9_7", "spawn_edge": "-42006719#1",  "dest_edge": "E#S2", "depart_time": 30.0, "lane": "first", "pos": "20", "speed": "max", "color": [255, 255, 0, 255]}
+]
