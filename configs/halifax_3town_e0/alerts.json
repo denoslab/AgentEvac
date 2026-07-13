@@ -1,0 +1,101 @@
+{
+  "_meta": {
+    "description": "Reconstructed 28 May 2023 Upper Tantallon emergency-alert schedule and RCMP door-to-door timeline for the halifax_3town layout. Drives the M1 alert-event engine (E0 reconstruction) and the M3 door-to-door channel. See docs/jason_0611_response_assessment.md (M1/M2/M3 design) and docs/halifax_reconstruction_inputs.md (full provenance).",
+    "clock": {
+      "anchor": "ignition (ALARM 1, deck and woods on fire at Juneberry Lane, 15:28 on 28 May 2023)",
+      "sim_t0_equals": "15:28:00 ADT",
+      "note": "Matches fire source Juneberry_Lane t0=0 in configs/halifax_3town/fires.json. All *_time_s values are seconds after ignition.",
+      "e911_call_at_s": -75,
+      "required_sim_end_time_s": 15180,
+      "recommended_sim_end_time_s": 28800
+    },
+    "arm": "E0 reconstruction baseline (historical schedule). routing_text is null for every event because the 2023 orders carried no route guidance. E1 applies a single global offset to every issue_time_s. E2 populates routing_text (see docs).",
+    "semantics": {
+      "areas_are_cumulative": true,
+      "note": "Once an order is issued for an area it stays in effect for the rest of the run. Each event lists only the NEWLY ordered areas. The resolver should treat an area as ordered from its first covering event onward.",
+      "membership_test": "An agent belongs to an area if its spawn edge is in that area's 'edges' list. Edge lists are the active 3-town spawn edges per community."
+    },
+    "caveats": [
+      "Fire-spread compression: the model fire sources finish igniting at ~5800 s (97 min) whereas the real evacuation orders extended to 253 min (19:41). Wave-3 (15180 s) fires when the model fire is already near maximal extent. State as a limitation or re-time the fire layer.",
+      "Area abstraction: the model's three communities are mapped to the three real alert waves. Real wave 3 covered five subdivisions (Haliburton Hills, Glen Arbour, Pockwock, White Hills, Lucasville); the model represents it as the english_corner cluster. Confirm community centroids against the net geometry.",
+      "Verbatim wording: hazard_text values are near-verbatim paraphrases from the HRFE/HRM reports. Replace with the NAAD/Alert Ready archive text if recovered.",
+      "Comfort-centre naming: Wave 1 named Black Point in the order. Per the E2 plan this moves destination naming into E0 and makes the E2 delta route-guidance only."
+    ],
+    "sources": {
+      "alert_times": "HRFE Post Incident Analysis (240806rci01), Event Timeline, physical PDF pp.14-16; cross-checked against HRM After Action Report (231017rci05), timeline table, physical PDF p.10",
+      "door_to_door": "HRM After Action Report (231017rci05), physical PDF p.10 ('15:42 RCMP began door-to-door evacuation of residents downwind in the path of fire')"
+    }
+  },
+
+  "areas": {
+    "westwood_hills": {
+      "label": "Westwood Hills subdivision (Upper Tantallon / Upper Hammonds Plains)",
+      "model_community": "upper_tantallon",
+      "agents": 60,
+      "edges": ["-70646910", "-70646940", "-70646943", "-70646958", "-70646959#0", "-70646959#1", "-70760263#0", "-70760263#1", "-70760263#2", "70646940", "70646958", "70646959#0", "70646959#1", "70647058#0", "70760263#1", "70760263#2"]
+    },
+    "highland_park": {
+      "label": "Yankeetown / Highland Park subdivision (Hammonds Plains)",
+      "model_community": "highland_park",
+      "agents": 60,
+      "edges": ["-70946822#2", "-70946834", "-70946837", "-70946839", "-70946840#1", "70946822#1", "70946822#2", "70946834", "70946837", "70946840#0", "70946840#1"]
+    },
+    "outer_extension": {
+      "label": "Wave-3 extension proxy (real: Haliburton Hills, Glen Arbour, Pockwock Rd, White Hills, Lucasville Rd to Sackville Dr)",
+      "model_community": "english_corner",
+      "agents": 62,
+      "edges": ["-71321910#0", "-71321910#1", "-71321913#2", "-71322228", "-71322252#0", "-71322252#1", "-71322252#2", "-71322258", "-71322546#0", "71321900#0", "71321900#1", "71321910#0", "71321910#1", "71321913#2", "71322228", "71322252#1", "71322258", "71322579"]
+    }
+  },
+
+  "schedule": [
+    {
+      "id": "EA-1",
+      "issue_time_s": 6300,
+      "wall_clock": "17:13",
+      "areas": ["westwood_hills"],
+      "instruction": "evacuate_now",
+      "hazard_text": "Evacuation ordered for Westwood Hills subdivision due to ongoing multiple structure and forest fire. All residents in Westwood Hills ordered to evacuate.",
+      "comfort_centre": "Black Point and Area Community Centre",
+      "routing_text": null,
+      "channel": "wireless_emergency_alert",
+      "source": "HRFE 240806rci01 p.16 (17:13:00 NSEMO Emergency Alert Issued)"
+    },
+    {
+      "id": "EA-2",
+      "issue_time_s": 9660,
+      "wall_clock": "18:09",
+      "areas": ["highland_park"],
+      "instruction": "evacuate_now",
+      "hazard_text": "The fire has now spread, and an evacuation order is now issued for Yankeetown (Highland Park) subdivision, Hammonds Plains. The earlier order for Westwood Hills remains in effect.",
+      "comfort_centre": "Black Point and Area Community Centre",
+      "routing_text": null,
+      "channel": "wireless_emergency_alert",
+      "source": "HRFE 240806rci01 p.16 (18:09:00 Update to NSEMO Emergency Alert); HRM 231017rci05 p.10"
+    },
+    {
+      "id": "EA-3",
+      "issue_time_s": 15180,
+      "wall_clock": "19:41",
+      "areas": ["outer_extension"],
+      "instruction": "evacuate_now",
+      "hazard_text": "Evacuation order extended to Haliburton Hills, Glen Arbour, Pockwock Rd, White Hills subdivision, Lucasville Rd all the way to Sackville Dr. This is in addition to the earlier evacuation orders. Take your pets with you when you evacuate.",
+      "comfort_centre": null,
+      "routing_text": null,
+      "channel": "wireless_emergency_alert",
+      "source": "HRFE 240806rci01 p.16 (19:41:00 Update to NSEMO Alert); HRM 231017rci05 p.10"
+    }
+  ],
+
+  "door_to_door": {
+    "_comment": "M3 channel. RCMP began door-to-door evacuation of downwind residents ~14 min after ignition, ~90 min before the first broadcast alert. Sweep rate parameterized from the report timeline.",
+    "start_time_s": 840,
+    "wall_clock": "15:42",
+    "initial_areas": ["westwood_hills"],
+    "sweep": [
+      {"area": "westwood_hills", "begin_s": 840, "cleared_by_s": 3600, "note": "By 16:28 (3000 s) Command directed RCMP to clear the subdivision (200 cars). HRFE p.13."}
+    ],
+    "rate_note": "One subdivision took roughly 46 min of door-knocking before the broadcast order. Use as the default per-area sweep duration; expose as an M3 sensitivity knob.",
+    "source": "HRM 231017rci05 p.10 (15:42); HRFE 240806rci01 pp.12-13 (16:12 RCMP planning, 16:28 clear subdivision)"
+  }
+}
