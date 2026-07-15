@@ -34,6 +34,7 @@ SCENARIO_CHOICES: Tuple[str, ...] = (
     "no_notice",
     "alert_guided",
     "advice_guided",
+    "advice_guided_neutral",
 )
 
 
@@ -43,12 +44,18 @@ def load_scenario_config(mode: str) -> Dict[str, Any]:
     The config controls which data fields are surfaced to agents in the LLM prompt.
 
     Args:
-        mode: One of ``"no_notice"``, ``"alert_guided"``, or ``"advice_guided"``.
-            Any unrecognised value is treated as ``"advice_guided"``.
+        mode: One of ``"no_notice"``, ``"alert_guided"``, ``"advice_guided"``, or
+            ``"advice_guided_neutral"``.  Any unrecognised value is treated as
+            ``"advice_guided"``.  ``"advice_guided_neutral"`` is an ablation arm whose
+            information content is identical to ``"advice_guided"`` (its ``mode`` field
+            normalises to ``"advice_guided"`` so every information filter treats it the
+            same); it differs only in prompt tone, signalled by ``tone == "neutral"``.
 
     Returns:
         A dict with keys:
-            - ``mode``                          : Normalised mode string.
+            - ``mode``                          : Normalised information-regime string.
+            - ``tone``                          : ``"directive"`` or ``"neutral"`` -- selects
+              the prompt phrasing without affecting which data fields are shown.
             - ``title``                         : Human-readable scenario name.
             - ``description``                   : One-sentence scenario description.
             - ``forecast_visible``              : Whether fire forecast summary is shown.
@@ -62,6 +69,7 @@ def load_scenario_config(mode: str) -> Dict[str, Any]:
     if name == "no_notice":
         return {
             "mode": name,
+            "tone": "directive",
             "title": "No-Notice Wildfire",
             "description": (
                 "No official warning is available yet. Agents rely on self-observation and neighbor messages."
@@ -75,6 +83,7 @@ def load_scenario_config(mode: str) -> Dict[str, Any]:
     if name == "alert_guided":
         return {
             "mode": name,
+            "tone": "directive",
             "title": "Alert-Guided Evacuation",
             "description": (
                 "Official alerts expose hazard location and projected spread, but do not prescribe a route."
@@ -85,8 +94,14 @@ def load_scenario_config(mode: str) -> Dict[str, Any]:
             "expected_utility_visible": True,
             "neighborhood_observation_visible": True,
         }
-    return {
+    # ``advice_guided`` and the ``advice_guided_neutral`` ablation arm share an
+    # identical information payload; ``mode`` normalises to "advice_guided" for both
+    # so every information filter treats them the same.  Only ``tone`` differs, which
+    # selects directive vs. neutral prompt phrasing (see ``scenario_prompt_suffix`` and
+    # ``scenario_system_prompt``).
+    cfg = {
         "mode": "advice_guided",
+        "tone": "neutral" if name == "advice_guided_neutral" else "directive",
         "title": "Advice-Guided Evacuation",
         "description": (
             "Official alerts include both hazard information and route-oriented guidance."
@@ -97,6 +112,7 @@ def load_scenario_config(mode: str) -> Dict[str, Any]:
         "expected_utility_visible": True,
         "neighborhood_observation_visible": True,
     }
+    return cfg
 
 
 def apply_scenario_to_signals(
@@ -321,10 +337,77 @@ def scenario_prompt_suffix(mode: str) -> str:
             "Do NOT invent route guidance. Use the provided official alert content, "
             "hazard and forecast cues, and local road conditions to decide when, where, and how to evacuate."
         )
+    if cfg["tone"] == "neutral":
+        # Information-matched ablation arm: same route-guidance payload as the directive
+        # advice arm (advisory labels and their meaning, that guidance updates over time),
+        # but with the directive exhortation and imperative framing removed so the prompt
+        # does not pre-commit the agent to compliance.
+        return (
+            "This is an advice-guided evacuation: the Emergency Operations Center has issued official route guidance for your area. "
+            "Routes carry an advisory label (for example 'Recommended', 'Use with caution', or 'Avoid for now') reflecting the EOC's current assessment. "
+            "Updated guidance may be issued as conditions change. "
+            "Decide when, where, and how to evacuate based on this guidance together with your own observations and local road conditions."
+        )
     return (
         "This is an advice-guided evacuation: the Emergency Operations Center has issued official route guidance for your area. "
         "Follow routes marked advisory='Recommended' unless they are physically blocked or impassable. "
         "If you must deviate from official guidance, state why and choose the safest feasible alternative. "
         "Delayed departure or ignoring recommended routes increases your exposure to dangerous fire conditions. "
         "Stay responsive to updated guidance as conditions change."
+    )
+
+
+def scenario_system_prompt(mode: str, phase: str) -> str:
+    """Return the LLM ``system`` message for a decision phase under the active regime.
+
+    The system message frames the agent's role and how it should weigh information
+    sources.  For every regime except the ``advice_guided_neutral`` ablation arm this
+    returns the directive phrasing verbatim ("Trust official emergency guidance above
+    ... observations"), so existing scenarios -- and their recorded replay logs -- are
+    unchanged.  The neutral arm drops the hard-coded trust ordering that would otherwise
+    pre-commit the agent to compliance, holding the role framing and stakes constant so
+    the only manipulated variable is instruction tone.
+
+    Args:
+        mode: Active scenario mode string (raw, e.g. ``"advice_guided_neutral"``).
+        phase: ``"predeparture"`` (deciding whether to leave) or ``"routing"``
+            (choosing a route/destination once evacuating).
+
+    Returns:
+        The system prompt string for the given phase and regime.
+    """
+    if phase not in ("predeparture", "routing"):
+        raise ValueError(f"phase must be 'predeparture' or 'routing', got {phase!r}")
+    neutral = load_scenario_config(mode)["tone"] == "neutral"
+    if phase == "predeparture":
+        if neutral:
+            return (
+                "You are a resident in a wildfire-threatened area deciding whether to evacuate your household. "
+                "Your family's safety depends on this decision. "
+                "Consider official emergency guidance, your own observations, and neighbor messages, "
+                "and decide what is safest for your household. "
+                "Follow the policy strictly."
+            )
+        return (
+            "You are a resident in a wildfire-threatened area deciding whether to evacuate your household. "
+            "Your family's safety depends on this decision. "
+            "Trust official emergency guidance above your own observations, "
+            "and your own observations above unverified neighbor messages. "
+            "Follow the policy strictly."
+        )
+    # phase == "routing"
+    if neutral:
+        return (
+            "You are a resident evacuating from a wildfire, choosing the safest route to a shelter. "
+            "Your safety depends on this choice. "
+            "Consider official emergency guidance, your own observations, and neighbor messages, "
+            "and choose the route that is safest for you. "
+            "Follow the policy strictly."
+        )
+    return (
+        "You are a resident evacuating from a wildfire, choosing the safest route to a shelter. "
+        "Your safety depends on this choice. "
+        "Trust official emergency guidance above personal observations, "
+        "and personal observations above unverified neighbor messages. "
+        "Follow the policy strictly."
     )

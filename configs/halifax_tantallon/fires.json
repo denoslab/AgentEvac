@@ -1,0 +1,15 @@
+{
+  "sources": [
+    {"id": "Juneberry_Lane",   "t0": 0.0, "x": 44877.0, "y": 20092.0,  "r0": 30.0,  "growth_m_per_s": 0.3},
+    {"id": "Tattingstone_Court", "t0": 462.0, "x": 45093.0, "y": 20019.0,  "r0": 80.0,  "growth_m_per_s": 0.4},
+    {"id": "Westwood_Blvd", "t0": 778.0, "x": 45217.0, "y": 20050.0, "r0": 120.0,  "growth_m_per_s": 0.5},
+    {"id": "Westwood_Blvd_662_642_626", "t0": 1064.0, "x": 45185.0, "y": 20200.0,  "r0": 120.0,  "growth_m_per_s": 0.4},
+    {"id": "Juneberry_Lane_Back", "t0": 1295.0, "x": 44832.0, "y": 20150.0,  "r0": 110.0,  "growth_m_per_s": 0.3},
+    {"id": "Wyndham_Drive", "t0": 2208.0, "x": 45528.0, "y": 19935.0,  "r0": 130.0,  "growth_m_per_s": 0.4},
+    {"id": "Hemlock_Drive_Top", "t0": 2388.0, "x": 45444.0, "y": 20201.0,  "r0": 130.0,  "growth_m_per_s": 0.3},
+    {"id": "Hemlock_Drive_2", "t0": 2509.0, "x": 45980.0, "y": 19900.0,  "r0": 210.0,  "growth_m_per_s": 0.4},
+    {"id": "Oceanstone_Drive", "t0": 3348.0, "x": 44682.0, "y": 20173.0,  "r0": 70.0,  "growth_m_per_s": 0.1},
+    {"id": "Aralia_lane", "t0": 3348.0, "x": 44435.0, "y": 19982.0,  "r0": 120.0,  "growth_m_per_s": 0.1}
+  ],
+  "events": []
+}

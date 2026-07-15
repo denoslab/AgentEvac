@@ -66,10 +66,12 @@ class TestRouteReplayRecordMode:
         rr.close()
         assert any(p.suffix == ".jsonl" for p in tmp_path.iterdir())
 
-    def test_creates_dialog_log_file(self, tmp_path):
+    def test_does_not_create_dialog_log_file(self, tmp_path):
+        # The .dialogs.log transcript is no longer written during a run; it is
+        # regenerated on demand from the CSV via scripts/generate_dialog_log.py.
         rr = RouteReplay(mode="record", path=_record_path(tmp_path))
         rr.close()
-        assert any(".dialogs.log" in p.name for p in tmp_path.iterdir())
+        assert not any(".dialogs.log" in p.name for p in tmp_path.iterdir())
 
     def test_creates_dialog_csv_file(self, tmp_path):
         rr = RouteReplay(mode="record", path=_record_path(tmp_path))

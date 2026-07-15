@@ -7,6 +7,20 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+
+def delay_rounds_for(info_delay_s: float, decision_period_s: float) -> int:
+    """Convert an institutional information delay into a whole number of stale decision rounds.
+
+    The institutional-delay model serves official information that is
+    ``delay_rounds`` decision rounds old.  With the canonical 240 s round, the
+    ``INFO_DELAY_S`` sweep levels {0, 240, 480, 720} map to {0, 1, 2, 3} rounds.
+    The same formula at a stale 60 s round would map them to {0, 4, 8, 12}, which
+    silently quadruples the delay.  Keeping the mapping in one tested place guards
+    against that regression.
+    """
+    return int(round(float(info_delay_s) / max(float(decision_period_s), 1e-9)))
+
+
 _REFERENCE_PREFIXES = (
     "run_params_",
     "run_metrics_",
@@ -121,7 +135,25 @@ def write_run_parameter_log(
 
 
 def companion_parameter_path(reference_path: str | Path, *, base_name: str = "run_params") -> Path:
-    """Derive the expected companion parameter-log path for a run artifact."""
+    """Derive the expected companion parameter-log path for a run artifact.
+
+    First tries the exact constructed name.  If that doesn't exist, falls back
+    to a glob for ``run_params_*<timestamp>.json`` in the same directory, which
+    handles the doubled-suffix naming produced by some experiment runners.
+    """
     ref = Path(reference_path)
     suffix = reference_suffix(ref)
-    return ref.with_name(f"{base_name}_{suffix}.json")
+    exact = ref.with_name(f"{base_name}_{suffix}.json")
+    if exact.exists():
+        return exact
+
+    # Extract the trailing timestamp (YYYYMMDD_HHMMSS) from the suffix for glob fallback.
+    import re
+    ts_match = re.search(r"(\d{8}_\d{6})$", suffix)
+    if ts_match:
+        ts = ts_match.group(1)
+        candidates = sorted(ref.parent.glob(f"{base_name}_*{ts}.json"))
+        if candidates:
+            return candidates[0]
+
+    return exact

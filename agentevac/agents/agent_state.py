@@ -8,6 +8,8 @@ vehicle ID.  The main simulation loop (``agentevac.simulation.main``) creates or
 Psychological profile parameters stored in each agent's ``profile`` dict:
     - ``theta_trust``  : Weight given to social (neighbor) signals vs. own observations [0, 1].
                          Higher values mean the agent trusts peer messages more.
+    - ``theta_auth``   : Authority-trust weight on an active official evacuation order [0, 1].
+                         The order blends into belief with a = theta_auth * channel_factor (C.7).
     - ``theta_r``      : Risk threshold; agent departs if ``p_danger > theta_r`` [0, 1].
     - ``theta_u``      : Urgency threshold; agent departs if the urgency term falls below
                          this value (see ``departure_model.py``) [0, 1].
@@ -86,26 +88,35 @@ def sample_profile_params(
     means: Dict[str, float],
     spreads: Dict[str, float],
     bounds: Dict[str, Tuple[float, float]],
+    *,
+    master_seed: int = 0,
 ) -> Dict[str, float]:
     """Sample per-agent profile parameters from truncated normal distributions.
 
     Each parameter is drawn from ``N(mean, spread)`` and clipped to ``[lo, hi]``.
     When ``spread <= 0`` the mean is returned unchanged (no heterogeneity).
 
-    A deterministic RNG seeded by ``agent_id`` ensures that the same agent always
-    receives the same profile regardless of which code path creates it first.
+    The RNG is derived from ``(master_seed, agent_id)`` via BLAKE2b so that:
+      * the same agent under the same master always receives the same profile,
+      * different masters yield independent profile draws (so multi-seed
+        replication studies actually vary agent heterogeneity, not just SUMO
+        traffic noise), and
+      * reproducibility does not depend on Python's randomized ``hash()``.
 
     Args:
-        agent_id: Vehicle ID used to seed the per-agent RNG.
+        agent_id: Vehicle ID used as one component of the per-agent RNG seed.
         means: Dict of parameter names to population means.
         spreads: Dict of parameter names to population standard deviations.
             Missing keys or values <= 0 disable sampling for that parameter.
         bounds: Dict of parameter names to ``(lo, hi)`` clipping bounds.
+        master_seed: Run-level master seed; combined with ``agent_id`` to seed
+            the local RNG.  Defaults to 0 for tests and ad-hoc callers.
 
     Returns:
         A dict of sampled parameter values, one per key in ``means``.
     """
-    rng = random.Random(hash(agent_id))
+    from agentevac.utils.seeding import make_rng
+    rng = make_rng(master_seed, "agent_profile", agent_id)
     result: Dict[str, float] = {}
     for key, mu in means.items():
         sigma = float(spreads.get(key, 0.0))
@@ -129,6 +140,7 @@ def ensure_agent_state(
     sim_t_s: float,
     *,
     default_theta_trust: float = 0.5,
+    default_theta_auth: float = 0.5,
     default_theta_r: float = 0.45,
     default_theta_u: float = 0.30,
     default_gamma: float = 0.995,
@@ -176,6 +188,7 @@ def ensure_agent_state(
             last_sim_t_s=float(sim_t_s),
             profile={
                 "theta_trust": float(default_theta_trust),
+                "theta_auth": float(default_theta_auth),
                 "theta_r": float(default_theta_r),
                 "theta_u": float(default_theta_u),
                 "gamma": float(default_gamma),
@@ -203,6 +216,7 @@ def ensure_agent_state(
         AGENT_STATES[agent_id] = state
     # Back-fill any profile keys added in later code versions without resetting existing ones.
     state.profile.setdefault("theta_trust", float(default_theta_trust))
+    state.profile.setdefault("theta_auth", float(default_theta_auth))
     state.profile.setdefault("theta_r", float(default_theta_r))
     state.profile.setdefault("theta_u", float(default_theta_u))
     state.profile.setdefault("gamma", float(default_gamma))

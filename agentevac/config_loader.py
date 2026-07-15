@@ -75,8 +75,8 @@ def load_map_config(map_name: str) -> Dict[str, Any]:
 
     Returns:
         Dict with keys ``"map"``, ``"spawns"``, ``"fires"``, ``"destinations"``,
-        ``"routes"`` — each holding the parsed JSON content.  Missing optional
-        files (``routes.json``) default to empty list/dict.
+        ``"routes"``, ``"alerts"`` — each holding the parsed JSON content.  Missing
+        optional files (``routes.json``, ``alerts.json``) default to empty list/dict.
 
     Raises:
         FileNotFoundError: If the map directory does not exist.
@@ -95,6 +95,8 @@ def load_map_config(map_name: str) -> Dict[str, Any]:
         ("fires", True),
         ("destinations", True),
         ("routes", False),
+        ("alerts", False),
+        ("corridors", False),
     ]:
         path = map_dir / f"{name}.json"
         if path.exists():

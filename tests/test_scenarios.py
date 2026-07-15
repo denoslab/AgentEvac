@@ -9,6 +9,7 @@ from agentevac.agents.scenarios import (
     filter_menu_for_scenario,
     load_scenario_config,
     scenario_prompt_suffix,
+    scenario_system_prompt,
 )
 
 
@@ -42,7 +43,7 @@ class TestLoadScenarioConfig:
         for mode in SCENARIO_CHOICES:
             cfg = load_scenario_config(mode)
             for key in (
-                "mode", "title", "description", "forecast_visible",
+                "mode", "tone", "title", "description", "forecast_visible",
                 "route_head_forecast_visible", "official_route_guidance_visible",
                 "expected_utility_visible", "neighborhood_observation_visible",
             ):
@@ -51,6 +52,85 @@ class TestLoadScenarioConfig:
     def test_case_insensitive(self):
         cfg = load_scenario_config("NO_NOTICE")
         assert cfg["mode"] == "no_notice"
+
+
+# Directive system-prompt literals captured verbatim.  These guard against accidental
+# drift in the non-ablation arms: changing them would silently alter the directive
+# scenarios (and invalidate their recorded replay logs), so the test pins them.
+_DIRECTIVE_PREDEP = (
+    "You are a resident in a wildfire-threatened area deciding whether to evacuate your household. "
+    "Your family's safety depends on this decision. "
+    "Trust official emergency guidance above your own observations, "
+    "and your own observations above unverified neighbor messages. "
+    "Follow the policy strictly."
+)
+_DIRECTIVE_ROUTING = (
+    "You are a resident evacuating from a wildfire, choosing the safest route to a shelter. "
+    "Your safety depends on this choice. "
+    "Trust official emergency guidance above personal observations, "
+    "and personal observations above unverified neighbor messages. "
+    "Follow the policy strictly."
+)
+
+
+class TestAdviceGuidedNeutralAblation:
+    """The tone-neutral ablation arm: information-matched to advice_guided, tone-only diff."""
+
+    def test_registered_as_choice(self):
+        assert "advice_guided_neutral" in SCENARIO_CHOICES
+
+    def test_information_matched_to_advice_guided(self):
+        # Config must be identical to advice_guided in every field except ``tone`` --
+        # in particular ``mode`` normalises to "advice_guided" so every information
+        # filter treats the two arms the same.
+        directive = load_scenario_config("advice_guided")
+        neutral = load_scenario_config("advice_guided_neutral")
+        assert directive["tone"] == "directive"
+        assert neutral["tone"] == "neutral"
+        assert neutral["mode"] == "advice_guided"
+        assert {k: v for k, v in neutral.items() if k != "tone"} == {
+            k: v for k, v in directive.items() if k != "tone"
+        }
+
+    def test_signal_filtering_identical_to_advice_guided(self):
+        # apply_scenario_to_signals branches on cfg["mode"], so the neutral arm must
+        # receive byte-identical filtered signals.
+        env = {"observed_state": "smoke", "edge_margins_m": {"e1": 120.0}}
+        forecast = {"briefing": "fire spreading north", "route_head": {"e1": 0.3}}
+        assert apply_scenario_to_signals("advice_guided_neutral", env, forecast) == \
+            apply_scenario_to_signals("advice_guided", env, forecast)
+
+    def test_suffix_drops_exhortation_but_keeps_guidance_info(self):
+        neutral = scenario_prompt_suffix("advice_guided_neutral")
+        # Persuasive / directive content removed.
+        assert "increases your exposure" not in neutral
+        assert "Follow routes marked" not in neutral
+        # Informational content retained (matched to advice_guided).
+        assert "official route guidance" in neutral
+        assert "advisory" in neutral
+
+    def test_directive_suffix_unchanged(self):
+        # Drift guard: the directive arm must still carry the exhortation.
+        directive = scenario_prompt_suffix("advice_guided")
+        assert "increases your exposure" in directive
+        assert "Follow routes marked advisory='Recommended'" in directive
+
+    def test_neutral_system_prompt_drops_trust_ordering(self):
+        for phase in ("predeparture", "routing"):
+            sp = scenario_system_prompt("advice_guided_neutral", phase)
+            assert "Trust official" not in sp
+            assert "Consider official emergency guidance" in sp
+            assert "Follow the policy strictly." in sp
+
+    def test_directive_system_prompts_pinned_verbatim(self):
+        # Every non-neutral mode returns the exact original literals.
+        for mode in ("no_notice", "alert_guided", "advice_guided"):
+            assert scenario_system_prompt(mode, "predeparture") == _DIRECTIVE_PREDEP
+            assert scenario_system_prompt(mode, "routing") == _DIRECTIVE_ROUTING
+
+    def test_invalid_phase_raises(self):
+        with pytest.raises(ValueError):
+            scenario_system_prompt("advice_guided", "bogus_phase")
 
 
 class TestApplyScenarioToSignals:

@@ -34,7 +34,7 @@ import json
 import math
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 class RunMetricsCollector:
@@ -52,7 +52,32 @@ class RunMetricsCollector:
         run_mode: Run mode string ("record" or "replay") stored in the summary.
     """
 
-    def __init__(self, enabled: bool, base_path: str, run_mode: str):
+    def __init__(
+        self,
+        enabled: bool,
+        base_path: str,
+        run_mode: str,
+        *,
+        ordered_areas: Optional[Dict[str, Dict[str, Any]]] = None,
+        corridor_edges: Optional[Dict[str, List[str]]] = None,
+        spawn_edge_by_agent: Optional[Dict[str, str]] = None,
+    ):
+        """Create a collector.
+
+        Args:
+            enabled: If ``False``, all recording and export methods are no-ops.
+            base_path: Base file path for the output JSON (timestamp is appended).
+            run_mode: Run mode string ("record" or "replay") stored in the summary.
+            ordered_areas: Map area -> ``{"order_t_s", "channel", "edges"}`` for the areas
+                that received an evacuate order, from ``AlertSchedule.ordered_areas()``.
+                Drives the order-compliance and area-clearance metrics.  Empty means no
+                order was scheduled, so those metrics report empty.
+            corridor_edges: Map corridor name -> list of edge IDs for the egress-flow
+                split.  Empty until the corridor edge sets are defined against the network
+                geometry during E0 validation, in which case the flow split reports empty.
+            spawn_edge_by_agent: Map agent ID -> spawn edge, used to decide which agents
+                belong to an ordered area and to count non-evacuees the fire reaches.
+        """
         self.enabled = bool(enabled)
         self.run_mode = str(run_mode)
         self.path: Optional[str] = None
@@ -62,9 +87,39 @@ class RunMetricsCollector:
 
         self.total_agents: int = 0
         self._depart_times: Dict[str, float] = {}
+        self._depart_reasons: Dict[str, str] = {}
         self._arrival_times: Dict[str, float] = {}
         self._last_seen_active: Set[str] = set()
         self._last_seen_time: Dict[str, float] = {}
+
+        # --- Part J: awareness, order compliance, corridor flow, non-evacuee fire reach ---
+        self._spawn_edge_by_agent: Dict[str, str] = {
+            str(a): str(e) for a, e in (spawn_edge_by_agent or {}).items()
+        }
+        self._ordered_areas: Dict[str, Dict[str, Any]] = {
+            str(area): dict(spec) for area, spec in (ordered_areas or {}).items()
+        }
+        # Which agents were ordered, and by which area and channel, decided by spawn edge.
+        self._agent_order: Dict[str, Tuple[str, str]] = {}
+        _ordered_edge_index: Dict[str, Tuple[str, str]] = {}
+        for _area, _spec in self._ordered_areas.items():
+            _channel = str(_spec.get("channel", "broadcast"))
+            for _edge in _spec.get("edges", []) or []:
+                _ordered_edge_index.setdefault(str(_edge), (_area, _channel))
+        for _agent, _edge in self._spawn_edge_by_agent.items():
+            if _edge in _ordered_edge_index:
+                self._agent_order[_agent] = _ordered_edge_index[_edge]
+        # First-awareness instant and source per agent (promoted from M2).
+        self._awareness: Dict[str, Dict[str, Any]] = {}
+        # Spawn edges the fire has crossed, and when, for the non-evacuee companion count.
+        self._fire_reached_edges: Dict[str, float] = {}
+        # Corridor edge reverse index and the distinct agents seen on each corridor.
+        self._corridor_edge_index: Dict[str, Set[str]] = {}
+        self._corridor_agents: Dict[str, Set[str]] = {}
+        for _corridor, _edges in (corridor_edges or {}).items():
+            self._corridor_agents[str(_corridor)] = set()
+            for _edge in _edges or []:
+                self._corridor_edge_index.setdefault(str(_edge), set()).add(str(_corridor))
 
         self._choice_counts: Dict[str, int] = {}
         self._decision_snapshot_count = 0
@@ -72,6 +127,8 @@ class RunMetricsCollector:
         self._last_decision_state: Dict[str, str] = {}
         self._final_destination_by_agent: Dict[str, str] = {}
         self.token_usage: Optional[Dict[str, int]] = None
+
+        self._fire_contact_agents: Set[str] = set()
 
         self._exposure_sum = 0.0
         self._exposure_count = 0
@@ -121,7 +178,13 @@ class RunMetricsCollector:
             return
         if agent_id not in self._depart_times:
             self._depart_times[agent_id] = float(sim_t_s)
+            if reason is not None:
+                self._depart_reasons[agent_id] = str(reason)
         self._last_seen_time[agent_id] = float(sim_t_s)
+
+    def departure_reason(self, agent_id: str) -> Optional[str]:
+        """Return the stored departure reason for an agent, or ``None`` if unrecorded."""
+        return self._depart_reasons.get(agent_id)
 
     def record_arrival(self, agent_id: str, sim_t_s: float) -> None:
         """Record the first explicit arrival event for an agent.
@@ -276,7 +339,45 @@ class RunMetricsCollector:
         self._exposure_count += 1
         self._exposure_by_agent_sum[agent_id] = self._exposure_by_agent_sum.get(agent_id, 0.0) + exposure
         self._exposure_by_agent_count[agent_id] = self._exposure_by_agent_count.get(agent_id, 0) + 1
+        if current_margin_m is not None and current_margin_m <= 0.0:
+            self._fire_contact_agents.add(agent_id)
+        # Egress-flow split: count each distinct evacuating agent seen on a corridor edge.
+        for corridor in self._corridor_edge_index.get(str(current_edge), ()):
+            self._corridor_agents[corridor].add(agent_id)
         self._last_seen_time[agent_id] = float(sim_t_s)
+
+    def record_awareness(self, agent_id: str, sim_t_s: float, source: str) -> None:
+        """Record an agent's first-awareness instant and source (promoted from M2).
+
+        Only the first call per ``agent_id`` is stored, so the earliest awareness stands.
+
+        Args:
+            agent_id: Vehicle ID.
+            sim_t_s: Simulation time the agent first became aware, in seconds.
+            source: First-warning channel, one of ``alert``, ``door_knock``,
+                ``perception``, or ``peer``.
+        """
+        if not self.enabled:
+            return
+        if agent_id in self._awareness:
+            return
+        self._awareness[agent_id] = {"t_s": float(sim_t_s), "source": str(source)}
+
+    def record_fire_reached_edge(self, edge_id: str, sim_t_s: float) -> None:
+        """Record the first time the fire crosses ``edge_id`` (fire margin <= 0).
+
+        Used to count non-evacuated households the fire reaches, which is the companion
+        to the evacuating-only exposure average.  Only the earliest crossing is kept.
+
+        Args:
+            edge_id: SUMO edge ID the fire has reached.
+            sim_t_s: Simulation time of the first crossing, in seconds.
+        """
+        if not self.enabled:
+            return
+        edge = str(edge_id)
+        if edge not in self._fire_reached_edges:
+            self._fire_reached_edges[edge] = float(sim_t_s)
 
     def record_conflict_sample(
         self,
@@ -374,6 +475,10 @@ class RunMetricsCollector:
     def compute_average_hazard_exposure(self) -> Dict[str, Any]:
         """Compute global and per-agent average hazard-exposure risk scores.
 
+        Samples are taken from active vehicles only, so this average is conditional on
+        evacuating.  A household that stays put contributes nothing here and is instead
+        counted by :meth:`compute_non_evacuated_reached_by_fire` when the fire reaches it.
+
         Returns:
             Dict with ``global_average``, ``sample_count``, and ``per_agent_average``.
         """
@@ -435,6 +540,155 @@ class RunMetricsCollector:
             "total_agents_with_destination": total,
         }
 
+    def compute_mobilization_delay(self) -> Dict[str, Any]:
+        """Compute the delay from first awareness to departure, per agent and aggregate.
+
+        Only agents with both a recorded awareness instant and a departure are counted,
+        so a household that is aware but never leaves is excluded.  This is the
+        pre-evacuation delay the old simulation suppressed.
+
+        Returns:
+            Dict with ``average`` (seconds), ``count``, ``min``, ``max``, and
+            ``per_agent`` mapping agent ID to its delay.
+        """
+        per_agent: Dict[str, float] = {}
+        for agent_id, depart_t in self._depart_times.items():
+            aware = self._awareness.get(agent_id)
+            if aware is None:
+                continue
+            per_agent[agent_id] = float(depart_t) - float(aware["t_s"])
+        delays = list(per_agent.values())
+        return {
+            "average": (sum(delays) / float(len(delays))) if delays else 0.0,
+            "count": len(delays),
+            "min": min(delays) if delays else 0.0,
+            "max": max(delays) if delays else 0.0,
+            "per_agent": per_agent,
+        }
+
+    def compute_order_compliance(self) -> Dict[str, Any]:
+        """Compute the share of ordered households that evacuated, overall and split.
+
+        A household is ordered when its spawn edge is in an area that received an evacuate
+        order.  It counts as evacuated if it departed at any point.  The split is by the
+        area's first-warning channel and by area.  The channel label reflects the warning
+        schedule, not a claim that the channel drove the departure, so it is a per-area
+        comparison anchored to the record, not a ranking of the channels.
+
+        Returns:
+            Dict with ``overall``, ``by_channel``, and ``by_area``, each a bucket with
+            ``ordered``, ``evacuated``, and ``rate``.
+        """
+        def _bucket() -> Dict[str, Any]:
+            return {"ordered": 0, "evacuated": 0}
+
+        overall = _bucket()
+        by_channel: Dict[str, Dict[str, Any]] = {}
+        by_area: Dict[str, Dict[str, Any]] = {}
+        for agent_id, (area, channel) in self._agent_order.items():
+            evacuated = agent_id in self._depart_times
+            for bucket in (overall,
+                           by_channel.setdefault(channel, _bucket()),
+                           by_area.setdefault(area, _bucket())):
+                bucket["ordered"] += 1
+                if evacuated:
+                    bucket["evacuated"] += 1
+
+        def _rate(bucket: Dict[str, Any]) -> Dict[str, Any]:
+            out = dict(bucket)
+            out["rate"] = (bucket["evacuated"] / float(bucket["ordered"])) if bucket["ordered"] > 0 else 0.0
+            return out
+
+        return {
+            "overall": _rate(overall),
+            "by_channel": {k: _rate(v) for k, v in by_channel.items()},
+            "by_area": {k: _rate(v) for k, v in by_area.items()},
+        }
+
+    def compute_area_clearance(self) -> Dict[str, Any]:
+        """Compute per-area order clearance, the latest departure among ordered households.
+
+        For each ordered area the clearance time is the latest departure among its ordered
+        households.  ``fully_cleared`` is true when every ordered household in the area
+        departed.  This is the primary E0 validation quantity and the source of the
+        timeline's area-clearance rows.
+
+        Returns:
+            Dict mapping area to ``{ordered, departed, fully_cleared, clearance_t_s,
+            channel, order_t_s}``.  ``clearance_t_s`` is ``None`` when no ordered household
+            in the area departed.
+        """
+        members: Dict[str, List[str]] = {}
+        for agent_id, (area, _channel) in self._agent_order.items():
+            members.setdefault(area, []).append(agent_id)
+
+        out: Dict[str, Any] = {}
+        for area, spec in self._ordered_areas.items():
+            area_members = members.get(area, [])
+            departed_times = [self._depart_times[a] for a in area_members if a in self._depart_times]
+            n_ordered = len(area_members)
+            n_departed = len(departed_times)
+            out[area] = {
+                "ordered": n_ordered,
+                "departed": n_departed,
+                "fully_cleared": bool(n_ordered > 0 and n_departed == n_ordered),
+                "clearance_t_s": (round(max(departed_times), 2) if departed_times else None),
+                "channel": spec.get("channel"),
+                "order_t_s": spec.get("order_t_s"),
+            }
+        return out
+
+    def compute_awareness_source_share(self) -> Dict[str, Any]:
+        """Compute the share of first awareness by channel and the aware count.
+
+        Returns:
+            Dict with ``counts`` per source, ``share`` per source, and ``n_aware``.
+        """
+        counts: Dict[str, int] = {}
+        for rec in self._awareness.values():
+            source = str(rec.get("source", "none"))
+            counts[source] = counts.get(source, 0) + 1
+        total = sum(counts.values())
+        share = {s: (c / float(total)) for s, c in counts.items()} if total > 0 else {}
+        return {"counts": counts, "share": share, "n_aware": total}
+
+    def compute_corridor_flow(self) -> Dict[str, Any]:
+        """Compute the distinct evacuating agents seen on each corridor's edges.
+
+        Returns:
+            Dict mapping corridor name to ``{agents, agent_ids}``.  Empty when no corridor
+            edge sets are configured.
+        """
+        return {
+            corridor: {"agents": len(agents), "agent_ids": sorted(agents)}
+            for corridor, agents in self._corridor_agents.items()
+        }
+
+    def compute_non_evacuated_reached_by_fire(self) -> Dict[str, Any]:
+        """Count households that never departed and whose spawn edge the fire crossed.
+
+        This is the companion to the evacuating-only exposure average.  Without it a
+        household that stays put contributes zero exposure, so a run where many stay would
+        look safer even though staying near the fire is dangerous.
+
+        Returns:
+            Dict with ``count`` and ``agent_ids``.
+        """
+        reached: List[str] = []
+        for agent_id, edge in self._spawn_edge_by_agent.items():
+            if agent_id in self._depart_times:
+                continue
+            if str(edge) in self._fire_reached_edges:
+                reached.append(agent_id)
+        return {"count": len(reached), "agent_ids": sorted(reached)}
+
+    def compute_departure_reasons(self) -> Dict[str, int]:
+        """Return a histogram of stored departure reasons."""
+        counts: Dict[str, int] = {}
+        for reason in self._depart_reasons.values():
+            counts[reason] = counts.get(reason, 0) + 1
+        return counts
+
     def summary(self) -> Dict[str, Any]:
         """Assemble the full run-metrics summary dict.
 
@@ -455,6 +709,23 @@ class RunMetricsCollector:
             "average_travel_time": self.compute_average_travel_time(),
             "average_signal_conflict": self.compute_average_signal_conflict(),
             "destination_choice_share": self.compute_destination_choice_share(),
+            "fire_contact": {
+                "agents_ever_in_contact": len(self._fire_contact_agents),
+                "fraction_of_total": len(self._fire_contact_agents) / max(1, self.total_agents),
+                "agent_ids": sorted(self._fire_contact_agents),
+            },
+            # --- Part J additions ---
+            # average_hazard_exposure above is conditional on evacuating, since only active
+            # vehicles are sampled; non_evacuated_reached_by_fire is its companion count.
+            "mobilization_delay": self.compute_mobilization_delay(),
+            "compliance": self.compute_order_compliance(),
+            "awareness_source_share": self.compute_awareness_source_share(),
+            "n_aware": len(self._awareness),
+            "n_never_aware": max(0, self.total_agents - len(self._awareness)),
+            "area_clearance": self.compute_area_clearance(),
+            "corridor_flow": self.compute_corridor_flow(),
+            "non_evacuated_reached_by_fire": self.compute_non_evacuated_reached_by_fire(),
+            "departure_reasons": self.compute_departure_reasons(),
             **({"token_usage": self.token_usage} if self.token_usage else {}),
         }
 

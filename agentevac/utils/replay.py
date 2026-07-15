@@ -9,10 +9,13 @@ This module provides ``RouteReplay``, a class that operates in one of two modes:
         - ``route_change`` events for route application
     Cognition and dialog events are write-only metadata for research/debugging.
 
-    Three output files are created:
+    Two output files are created:
         - ``routes_<run_id>.jsonl``         — Replayable route-change schedule.
-        - ``routes_<run_id>.dialogs.log``   — Human-readable LLM dialog transcript.
         - ``routes_<run_id>.dialogs.csv``   — Machine-readable LLM dialog table.
+
+    The human-readable ``routes_<run_id>.dialogs.log`` transcript is no longer
+    emitted during a run because it duplicates the CSV.  Regenerate it on demand
+    from the CSV with ``scripts/generate_dialog_log.py``.
 
 **replay** — Loads a previously recorded JSONL file and, on each simulation step,
     releases vehicles according to the recorded ``departure_release`` schedule and
@@ -43,10 +46,8 @@ class RouteReplay:
     def __init__(self, mode: str, path: str):
         self.mode = mode
         self.path = path
-        self.dialog_path: Optional[str] = None
         self.dialog_csv_path: Optional[str] = None
         self._fh = None
-        self._dialog_fh = None
         self._dialog_csv_fh = None
         self._dialog_csv_writer = None
         self._schedule = {}  # step_idx -> veh_id -> route_change record
@@ -55,12 +56,14 @@ class RouteReplay:
 
         if self.mode == "record":
             self.path = self._build_record_path(path)
-            self.dialog_path = self._build_dialog_path(self.path)
+            # The human-readable ``.dialogs.log`` transcript is no longer written
+            # during a run.  It carries no information beyond the machine-readable
+            # ``.dialogs.csv`` and can be regenerated on demand with
+            # ``scripts/generate_dialog_log.py``.
             self.dialog_csv_path = self._build_dialog_csv_path(self.path)
             os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
             # Use exclusive create to avoid any accidental overwrite.
             self._fh = open(self.path, "x", encoding="utf-8")
-            self._dialog_fh = open(self.dialog_path, "x", encoding="utf-8")
             self._dialog_csv_fh = open(self.dialog_csv_path, "x", encoding="utf-8", newline="")
             self._dialog_csv_writer = csv.DictWriter(
                 self._dialog_csv_fh,
@@ -101,10 +104,6 @@ class RouteReplay:
             self._fh.flush()
             self._fh.close()
             self._fh = None
-        if self._dialog_fh:
-            self._dialog_fh.flush()
-            self._dialog_fh.close()
-            self._dialog_fh = None
         if self._dialog_csv_fh:
             self._dialog_csv_fh.flush()
             self._dialog_csv_fh.close()
@@ -412,35 +411,13 @@ class RouteReplay:
         """
         Record one LLM interaction for audit/debugging.
         This is write-only metadata and is not used for replay routing actions.
-        """
-        if self.mode != "record" or self._dialog_fh is None:
-            return
 
-        self._dialog_fh.write("=" * 80 + "\n")
-        self._dialog_fh.write(
-            f"step={int(step)} time_s={float(sim_t_s):.2f} veh_id={veh_id} "
-            f"mode={control_mode} model={model}\n"
-        )
-        self._dialog_fh.write("-" * 80 + "\n")
-        self._dialog_fh.write("SYSTEM PROMPT:\n")
-        self._dialog_fh.write(system_prompt.strip() + "\n\n")
-        self._dialog_fh.write("USER PROMPT:\n")
-        self._dialog_fh.write(user_prompt.strip() + "\n\n")
-        self._dialog_fh.write("MODEL RESPONSE:\n")
-        if response_text:
-            self._dialog_fh.write(response_text.strip() + "\n")
-        else:
-            self._dialog_fh.write("<none>\n")
-        self._dialog_fh.write("\nPARSED OUTPUT:\n")
-        if parsed is None:
-            self._dialog_fh.write("<none>\n")
-        else:
-            self._dialog_fh.write(json.dumps(parsed, ensure_ascii=False, indent=2) + "\n")
-        if error:
-            self._dialog_fh.write("\nERROR:\n")
-            self._dialog_fh.write(str(error).strip() + "\n")
-        self._dialog_fh.write("\n")
-        self._dialog_fh.flush()
+        Only the machine-readable ``.dialogs.csv`` table is written here.  The
+        human-readable ``.dialogs.log`` transcript can be regenerated from that
+        CSV on demand with ``scripts/generate_dialog_log.py``.
+        """
+        if self.mode != "record" or self._dialog_csv_writer is None:
+            return
 
         if self._dialog_csv_writer is not None and self._dialog_csv_fh is not None:
             self._dialog_csv_writer.writerow({

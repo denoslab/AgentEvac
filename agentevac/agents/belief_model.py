@@ -18,7 +18,7 @@ The update pipeline (exposed via ``update_agent_belief``) runs once per decision
 """
 
 import math
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -269,6 +269,9 @@ def update_agent_belief(
     social_signal: Dict[str, Any],
     theta_trust: float,
     inertia: float = 0.35,
+    *,
+    order_weight: float = 0.0,
+    order_belief: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     """Run the full Bayesian belief-update pipeline for one decision round.
 
@@ -285,6 +288,9 @@ def update_agent_belief(
         social_signal: Social signal produced by ``information_model.build_social_signal``.
         theta_trust: Social-signal trust weight ∈ [0, 1] (from agent profile).
         inertia: Temporal smoothing factor ∈ [0, 0.999].
+        order_weight: Institutional blend weight a = theta_auth * channel_factor ∈ [0, 1]
+            for an active evacuation order (C.7).  0 disables the channel (default).
+        order_belief: Danger triplet the order pulls belief toward when order_weight > 0.
 
     Returns:
         An enriched belief dict containing:
@@ -312,6 +318,18 @@ def update_agent_belief(
         social_weight = 0.0
         env_weight = 1.0
         conflict = 0.0
+
+    # --- Institutional channel (C.7): blend an active evacuation order into the fused
+    # belief, weighted by ``order_weight`` = theta_auth * channel_factor.  Inert when the
+    # weight is 0, so every non-order update is bit-identical to the legacy pipeline. ---
+    if order_weight and order_belief:
+        a = _clamp(float(order_weight), 0.0, 1.0)
+        if a > 0.0:
+            _keys = ("p_safe", "p_risky", "p_danger")
+            fused = _normalize_triplet({
+                k: (1.0 - a) * float(fused.get(k, 0.0)) + a * float(order_belief.get(k, 0.0))
+                for k in _keys
+            })
 
     smoothed = smooth_belief(prev_belief or env_belief, fused, inertia=inertia)
     entropy = compute_belief_entropy(smoothed)
