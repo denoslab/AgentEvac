@@ -16,12 +16,15 @@ Examples
     python scripts/run_experiments.py --dry-run
     python scripts/run_experiments.py --arms e0 --agents rule_based      # free half first
     python scripts/run_experiments.py --arms e1,e4 --agents llm --skip-existing
+    python scripts/run_experiments.py --arms e4early --agents llm   # trust sweep, early alert
+    python scripts/run_experiments.py --arms e3 --agents rule_based  # ablation, no-notice + hazard-only
 
 Fixed knobs, matching docs/build_plan and the calibration
     map=halifax_3town_e0, sim-end-time=28800, scenario=no_notice,
-    FIRE_PERCEPTION_RANGE_M=1200. E1 sweeps ALERT_TIME_OFFSET_S, E4 sweeps
-    DEFAULT_THETA_AUTH. The counterfactual arms run messaging off, where the alert
-    channel is visible. E0 runs messaging on and off.
+    FIRE_PERCEPTION_RANGE_M=200. E1 sweeps ALERT_TIME_OFFSET_S, E4 sweeps
+    DEFAULT_THETA_AUTH, and E4early sweeps DEFAULT_THETA_AUTH at ALERT_TIME_OFFSET_S=-3600
+    so the order precedes the fire. The counterfactual arms run messaging off, where the
+    alert channel is visible. E0 runs messaging on and off.
 """
 from __future__ import annotations
 
@@ -43,17 +46,23 @@ DEFAULT_SUMO_HOME = "/usr/share/sumo"
 MAP_NAME = "halifax_3town_e0"
 
 # --- grid axes ---
-SEEDS_E0 = [47, 1024, 7, 13] # [47, 1024, 7, 13, 91, 128, 256, 512, 777, 2024]  # 10 seeds
+SEEDS_E0 = [47, 1024, 7] # [47, 1024, 7, 13, 91, 128, 256, 512, 777, 2024]  # 10 seeds
 SEEDS_CF = SEEDS_E0[:3]                                       # 3 seeds for E1/E4
 ALL_AGENTS = ["llm", "rule_based"]
 E1_OFFSETS = [-3600, -1800, -900, 900, 1800, 3600]           # capped at -3600 in code
 E4_AUTH = [0.1, 0.3, 0.5, 0.7, 0.9]
+E4_EARLY_OFFSET = -3600  # e4early sweeps theta_auth at this early alert offset, where the
+                         # order precedes the fire so authority trust is the deciding input
+E3_CONFIGS = [  # E3 ablations use degenerate map configs that differ from E0 only in alerts
+    ("nonotice", "halifax_3town_e0_nonotice"),      # (0,0,0), no alert schedule at all
+    ("hazardonly", "halifax_3town_e0_hazardonly"),  # (1,0,0), forecast visible, no directive
+]
 
 FIXED_FLAGS = [
-    "--map", MAP_NAME, "--sim-end-time", "28800",
+    "--sim-end-time", "28800",
     "--scenario", "no_notice", "--metrics", "on", "--events", "on",
 ]
-PERCEPTION_RANGE = "1200"
+PERCEPTION_RANGE = "200"
 
 MANIFEST_HDR = ["arm", "subdir", "agent", "seed", "messaging", "offset_s", "theta_auth",
                 "outdir", "status", "elapsed_s", "departed", "arrived", "total", "usable"]
@@ -75,6 +84,7 @@ class Cell:
     messaging: str      # on | off
     offset_s: int       # ALERT_TIME_OFFSET_S
     theta_auth: float   # DEFAULT_THETA_AUTH
+    map_name: str = MAP_NAME  # E3 overrides this with a degenerate config dir
 
     @property
     def outdir(self) -> Path:
@@ -114,6 +124,22 @@ def build_cells(arms, agents) -> list[Cell]:
             for agent in agents:
                 for seed in SEEDS_CF:
                     cells.append(Cell("e4", f"e4_auth{auth}", agent, seed, "off", 0, auth))
+    if "e4early" in arms:
+        # E1 x E4 interaction. Sweep theta_auth at an early alert offset, where the order
+        # precedes the fire and trust is the deciding input, unmasking the effect the
+        # historical offset 0 hides because the fire arrives with the alert.
+        for auth in E4_AUTH:
+            for agent in agents:
+                for seed in SEEDS_CF:
+                    cells.append(Cell("e4early", f"e4early_off{E4_EARLY_OFFSET:+d}_auth{auth}",
+                                      agent, seed, "off", E4_EARLY_OFFSET, auth))
+    if "e3" in arms:
+        # Ablation. Each variant is a degenerate map config with no offset and the default
+        # trust, differing from E0 only in the alert channel it exposes.
+        for tag, mapname in E3_CONFIGS:
+            for agent in agents:
+                for seed in SEEDS_CF:
+                    cells.append(Cell("e3", f"e3_{tag}", agent, seed, "off", 0, 0.5, map_name=mapname))
     return cells
 
 
@@ -121,12 +147,13 @@ def cell_cmd(cell: Cell, sumo_binary: str) -> list[str]:
     o = cell.outdir
     return [
         sys.executable, "-m", "agentevac.simulation.main",
-        "--sumo-binary", sumo_binary, *FIXED_FLAGS,
+        "--sumo-binary", sumo_binary, "--map", cell.map_name, *FIXED_FLAGS,
         "--agent-type", cell.agent, "--messaging", cell.messaging, "--seed", str(cell.seed),
         "--metrics-log-path", str(o / "run_metrics.json"),
         "--events-log-path", str(o / "events.jsonl"),
         "--params-log-path", str(o / "run_params.json"),
         "--replay-log-path", str(o / "llm_routes.jsonl"),
+        "--timeline-log-path", str(o / "run_timeline.jsonl"),
     ]
 
 
@@ -224,7 +251,7 @@ def preflight(cells, dry_run) -> bool:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Run the E0/E1/E4 experiment grid.")
-    ap.add_argument("--arms", default="e0,e1,e4", help="Comma list of arms to run (default all).")
+    ap.add_argument("--arms", default="e0,e1,e4", help="Comma list from e0,e1,e3,e4,e4early (default e0,e1,e4).")
     ap.add_argument("--agents", default="llm,rule_based", help="Comma list, llm and/or rule_based.")
     ap.add_argument("--sumo-binary", default="sumo", help="sumo or sumo-gui (default sumo).")
     ap.add_argument("--skip-existing", action="store_true", help="Skip cells that already have metrics.")
@@ -244,7 +271,7 @@ def main() -> int:
 
     n_llm = sum(1 for c in cells if c.agent == "llm")
     print(f"Grid: {len(cells)} cells  (arms={arms} agents={agents})")
-    for arm in ("e0", "e1", "e4"):
+    for arm in ("e0", "e1", "e3", "e4", "e4early"):
         k = sum(1 for c in cells if c.arm == arm)
         if k:
             print(f"  {arm}: {k} cells")
