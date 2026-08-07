@@ -1,0 +1,133 @@
+/* The MapLibre and uPlot stylesheets are imported from main.tsx so they land in
+   the bundle ahead of these directives, which keeps everything offline without
+   fighting the ordering rules for CSS imports. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-ink-bg text-ink-text font-sans text-base antialiased;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  /* Counters must never jitter while an operator is reading them. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum' 1;
+  }
+
+  :focus-visible {
+    outline: 2px solid #e69f00;
+    outline-offset: 2px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #12161c;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #2a333e;
+    border-radius: 5px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3a4550;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply bg-ink-panel border border-ink-line rounded-panel;
+  }
+
+  .panel-title {
+    @apply text-small font-semibold uppercase tracking-wide text-ink-muted px-4 py-2.5 border-b border-ink-line;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-panel border border-ink-line
+      bg-ink-raised px-3 text-base font-medium text-ink-text transition-colors
+      hover:bg-[#2c3642] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-ink-raised;
+    min-height: 32px;
+  }
+
+  .btn-primary {
+    @apply border-transparent bg-status-nominal text-[#04231b] hover:bg-[#00b384];
+  }
+
+  .btn-danger {
+    @apply border-status-hazard/60 text-status-hazard hover:bg-status-hazard/15;
+  }
+
+  .btn-ghost {
+    @apply border-transparent bg-transparent hover:bg-ink-raised;
+  }
+
+  .field-label {
+    @apply block text-small font-medium text-ink-muted mb-1.5;
+  }
+
+  .input {
+    @apply w-full rounded-panel border border-ink-line bg-ink-bg px-3 py-2 text-base
+      text-ink-text placeholder:text-ink-faint focus:border-status-caution focus:outline-none;
+  }
+
+  .card-choice {
+    @apply w-full text-left rounded-panel border p-3 transition-colors cursor-pointer;
+  }
+  .card-choice-off {
+    @apply border-ink-line bg-ink-bg hover:border-ink-faint hover:bg-ink-raised;
+  }
+  .card-choice-on {
+    @apply border-status-nominal bg-status-nominal/10;
+  }
+}
+
+/* Motion is limited to what carries meaning, and stops entirely when a viewer
+   has asked their system for reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+@keyframes ignition-pulse {
+  0%,
+  100% {
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.pulse-ignition {
+  animation: ignition-pulse 1.6s ease-in-out infinite;
+}
+
+.maplibregl-ctrl-attrib {
+  background: rgba(18, 22, 28, 0.82) !important;
+  color: #9aa5b1 !important;
+  font-size: 11px !important;
+}
+.maplibregl-ctrl-attrib a {
+  color: #9aa5b1 !important;
+}

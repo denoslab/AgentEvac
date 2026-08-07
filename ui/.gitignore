@@ -1,0 +1,9 @@
+frontend/node_modules/
+frontend/dist/
+frontend/.tsbuild/
+frontend/*.tsbuildinfo
+
+# Generated from configs/ and the road network by ui/tools/build_map_assets.py.
+# Rebuilding takes about fifteen seconds per package, so the bundles are not
+# carried in the repository.
+assets/previews/*.json
