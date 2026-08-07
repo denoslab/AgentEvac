@@ -87,6 +87,17 @@ _DRIVABLE_TYPES = {
     "highway.service",
 }
 
+#: Road classes a household never spawns onto, even though a passenger car may drive
+#: them.  A driveway does not meet a motorway, so a building whose nearest road is one of
+#: these is matched to the nearest community street instead.  Pass ``--allow-highway-spawn``
+#: to reproduce the earlier behaviour.
+_EXCLUDED_SPAWN_TYPES = {
+    "highway.motorway",
+    "highway.motorway_link",
+    "highway.trunk",
+    "highway.trunk_link",
+}
+
 
 # ---------------------------------------------------------------------------
 # Building polygon parsing
@@ -210,11 +221,75 @@ def _build_edge_index(net, drivable_types):
     return tree, edge_ids, points
 
 
+#: Spacing for densifying edge polylines before indexing, in metres.  A long straight
+#: edge carries only its endpoints, so without this a building beside its middle finds
+#: no nearby vertex and the edge is never considered.
+_DENSIFY_STEP_M = 50.0
+
+
+def _densify(shape, step_m=_DENSIFY_STEP_M):
+    """Return the polyline with intermediate points inserted at most ``step_m`` apart."""
+    import math
+
+    out = [(float(shape[0][0]), float(shape[0][1]))]
+    for (ax, ay), (bx, by) in zip(shape, shape[1:]):
+        ax, ay, bx, by = float(ax), float(ay), float(bx), float(by)
+        span = math.hypot(bx - ax, by - ay)
+        if span > 0.0:
+            # Stop one short of the endpoint, which is appended below, so a span that is
+            # an exact multiple of the step does not emit the endpoint twice.
+            for i in range(1, int(math.ceil(span / step_m))):
+                t = (i * step_m) / span
+                out.append((ax + (bx - ax) * t, ay + (by - ay) * t))
+        out.append((bx, by))
+    return out
+
+
+def _build_vertex_index(net, drivable_types):
+    """Index every vertex of every drivable edge, for exact nearest-edge lookup.
+
+    The midpoint index in :func:`_build_edge_index` asks which edge has the closest
+    middle vertex, which is a different question from which edge is closest.  A building
+    beside the end of a long street is routinely assigned to a neighbouring street whose
+    midpoint happens to be nearer.  Indexing all vertices, densified so no gap exceeds
+    ``_DENSIFY_STEP_M``, turns a radius query into a candidate set that is then resolved
+    by exact polyline distance.
+
+    Returns:
+        ``(kdtree, owner_edge_ids, shapes)`` where ``owner_edge_ids[i]`` names the edge
+        the i-th indexed point belongs to and ``shapes`` maps edge id to its polyline.
+    """
+    import numpy as np
+    from scipy.spatial import cKDTree
+
+    owners = []
+    points = []
+    shapes = {}
+    for e in net.getEdges(withInternal=False):
+        if e.getType() not in drivable_types:
+            continue
+        if not any(lane.allows("passenger") for lane in e.getLanes()):
+            continue
+        raw = e.getLanes()[0].getShape()
+        if not raw or len(raw) < 2:
+            continue
+        edge_id = e.getID()
+        shapes[edge_id] = [(float(p[0]), float(p[1])) for p in raw]
+        for point in _densify(shapes[edge_id]):
+            owners.append(edge_id)
+            points.append(point)
+
+    if not points:
+        raise RuntimeError("No drivable edges found in the network.")
+    return cKDTree(np.array(points)), owners, shapes
+
+
 def find_nearest_edges(
     net,
     buildings: List[Dict],
     max_distance_m: float,
     drivable_types=None,
+    method: str = "exact",
 ) -> List[Dict]:
     """For each building, find the nearest drivable edge.
 
@@ -223,38 +298,75 @@ def find_nearest_edges(
         buildings: List of building dicts with ``lon``, ``lat``.
         max_distance_m: Skip buildings farther than this from any edge.
         drivable_types: Set of edge type strings to consider.
+        method: ``"exact"`` measures to the edge polyline with the same
+            ``polygonOffsetAndDistanceToPoint`` call the simulation uses for hazard
+            distance.  ``"midpoint"`` is the original nearest-middle-vertex behaviour,
+            kept so configs authored before the exact method can be reproduced.
+
+    The building's SUMO XY centroid travels with each match as ``home_x`` / ``home_y``,
+    so downstream stages can write it into the spawn config.  Without it the config keeps
+    only the edge, and hazard distance to a household collapses to its street centreline.
 
     Returns:
-        List of dicts with ``building_id``, ``edge_id``, ``distance_m``.
+        List of dicts with ``building_id``, ``edge_id``, ``distance_m``, ``home_x``,
+        ``home_y``.
     """
     import numpy as np
 
     if drivable_types is None:
         drivable_types = _DRIVABLE_TYPES
 
-    print(f"[SPAWNS] Building edge spatial index for {len(buildings)} buildings...")
-    tree, edge_ids, _ = _build_edge_index(net, drivable_types)
+    print(f"[SPAWNS] Building edge spatial index for {len(buildings)} buildings "
+          f"(method={method})...")
 
     # Convert all building centroids to SUMO XY
     xy_points = []
     for b in buildings:
         x, y = net.convertLonLat2XY(b["lon"], b["lat"])
         xy_points.append((x, y))
-
     query = np.array(xy_points)
-    distances, indices = tree.query(query, k=1)
+
+    if method == "midpoint":
+        tree, edge_ids, _ = _build_edge_index(net, drivable_types)
+        distances, indices = tree.query(query, k=1)
+        matched = [
+            (edge_ids[indices[i]], float(distances[i])) for i in range(len(buildings))
+        ]
+    elif method == "exact":
+        from sumolib import geomhelper
+
+        tree, owners, shapes = _build_vertex_index(net, drivable_types)
+        # The radius exceeds the cutoff by one densification step, so any edge that
+        # comes within the cutoff is certain to have an indexed vertex inside it.
+        radius = max_distance_m + _DENSIFY_STEP_M
+        neighbourhoods = tree.query_ball_point(query, r=radius)
+        matched = []
+        for i in range(len(buildings)):
+            point = (float(xy_points[i][0]), float(xy_points[i][1]))
+            best_id, best = None, float("inf")
+            for edge_id in {owners[j] for j in neighbourhoods[i]}:
+                _, dist = geomhelper.polygonOffsetAndDistanceToPoint(
+                    point, shapes[edge_id], perpendicular=False
+                )
+                if dist < best:
+                    best, best_id = float(dist), edge_id
+            matched.append((best_id, best))
+    else:
+        raise ValueError(f"Unknown snap method: {method!r}")
 
     results = []
     skipped = 0
     for i, b in enumerate(buildings):
-        dist = float(distances[i])
-        if dist > max_distance_m:
+        edge_id, dist = matched[i]
+        if edge_id is None or dist > max_distance_m:
             skipped += 1
             continue
         results.append({
             "building_id": b["id"],
-            "edge_id": edge_ids[indices[i]],
+            "edge_id": edge_id,
             "distance_m": round(dist, 1),
+            "home_x": round(float(xy_points[i][0]), 2),
+            "home_y": round(float(xy_points[i][1]), 2),
         })
 
     print(f"[SPAWNS] Matched {len(results)} buildings to edges "
@@ -291,6 +403,12 @@ def generate_spawn_config(
     for m in matches:
         edge_building_counts[m["edge_id"]] += 1
 
+    # Buildings that mapped to each edge, in a stable order, so home_xy lines up with the
+    # agent index that config_loader.expand_spawn_groups generates.
+    by_edge: Dict[str, List[Dict]] = defaultdict(list)
+    for m in sorted(matches, key=lambda r: (r["edge_id"], str(r["building_id"]))):
+        by_edge[m["edge_id"]].append(m)
+
     if mode == "per-building":
         # Each building contributes `count` agents → edge total = buildings * count
         groups = []
@@ -299,6 +417,10 @@ def generate_spawn_config(
             entry = {"edge": edge_id, "count": total}
             if dest_edge:
                 entry["dest_edge"] = dest_edge
+            # Each building repeats `count` times, so every agent inherits its own home.
+            homes = [m for m in by_edge[edge_id] for _ in range(count)]
+            entry["home_xy"] = [[m["home_x"], m["home_y"]] for m in homes]
+            entry["building_id"] = [str(m["building_id"]) for m in homes]
             groups.append(entry)
     elif mode == "per-edge":
         # Ignore how many buildings map here; each unique edge gets `count` agents
@@ -307,6 +429,12 @@ def generate_spawn_config(
             entry = {"edge": edge_id, "count": count}
             if dest_edge:
                 entry["dest_edge"] = dest_edge
+            # Take the first `count` buildings on the edge. Where the edge has fewer
+            # buildings than agents the surplus agents carry no home point and fall back
+            # to the edge polyline at load time.
+            homes = by_edge[edge_id][:count]
+            entry["home_xy"] = [[m["home_x"], m["home_y"]] for m in homes]
+            entry["building_id"] = [str(m["building_id"]) for m in homes]
             groups.append(entry)
     else:
         raise ValueError(f"Unknown mode: {mode!r}")
@@ -332,6 +460,8 @@ def generate_spawn_config(
     agents = []
     for g in groups:
         edge = g["edge"]
+        homes = g.get("home_xy") or []
+        building_ids = g.get("building_id") or []
         for i in range(1, g["count"] + 1):
             agent = {
                 "veh_id": f"{edge}_{i}",
@@ -343,8 +473,144 @@ def generate_spawn_config(
                 "speed": "max",
                 "color": palette[(i - 1) % len(palette)],
             }
+            if i - 1 < len(homes) and homes[i - 1] is not None:
+                agent["home_xy"] = homes[i - 1]
+            if i - 1 < len(building_ids):
+                agent["building_id"] = building_ids[i - 1]
             agents.append(agent)
     return agents
+
+
+# ---------------------------------------------------------------------------
+# Attaching centroids to an existing spawn set
+# ---------------------------------------------------------------------------
+
+def attach_centroids_to_existing(
+    existing: Dict,
+    matches: List[Dict],
+    net,
+    cap_radius_m: float = 600.0,
+) -> Tuple[Dict, Dict]:
+    """Attach building centroids to an existing compact spawn config without changing it.
+
+    The edge set, the per-edge counts, and therefore the agent IDs are all held fixed, so
+    a config produced here is the same household population as its source and the two
+    differ only in whether a household's hazard distance is measured at its street or at
+    its own building.  That is what keeps an edge batch and a centroid batch comparable.
+
+    For each group the buildings whose nearest edge is this one are used first, closest
+    first.  When a group needs more households than that edge has buildings, the search
+    widens to any building within ``cap_radius_m`` of the edge polyline, measured with the
+    same ``polygonOffsetAndDistanceToPoint`` call the simulation uses for hazard distance.
+    Any household still unmatched gets a ``None`` entry and falls back to edge geometry at
+    load time.
+
+    Args:
+        existing: Parsed compact spawn config with a ``groups`` key.
+        matches: Output of :func:`find_nearest_edges`, carrying ``home_x`` / ``home_y``.
+        net: sumolib network object, for edge shapes during the widened search.
+        cap_radius_m: How far the widened search may reach from the edge polyline.
+
+    Returns:
+        ``(config, report)`` where ``config`` is the annotated spawn config and ``report``
+        summarises how many households got a real building against an edge fallback.
+    """
+    if not isinstance(existing, dict) or "groups" not in existing:
+        raise ValueError(
+            "--attach-centroids-to expects a compact spawn config with a 'groups' key."
+        )
+
+    by_edge: Dict[str, List[Dict]] = defaultdict(list)
+    for m in matches:
+        by_edge[m["edge_id"]].append(m)
+    for rows in by_edge.values():
+        rows.sort(key=lambda r: (r["distance_m"], str(r["building_id"])))
+
+    all_points = [(m, float(m["home_x"]), float(m["home_y"])) for m in matches]
+
+    # Pass 1, direct assignment. Buildings are partitioned by nearest edge, so these sets
+    # are disjoint and no household can take a building another group needs directly.
+    used: set = set()
+    chosen_by_group: List[List[Dict]] = []
+    n_direct = n_widened = n_fallback = 0
+    deficit_edges = []
+    for group in existing["groups"]:
+        edge_id = str(group["edge"])
+        count = int(group["count"])
+        chosen = list(by_edge.get(edge_id, []))[:count]
+        used.update(str(m["building_id"]) for m in chosen)
+        n_direct += len(chosen)
+        chosen_by_group.append(chosen)
+        if len(chosen) < count:
+            deficit_edges.append((edge_id, count, len(chosen)))
+
+    # Pass 2, widened search for the groups still short, drawing only on buildings no
+    # group has claimed, so one building never becomes two households.  The geometry
+    # import is deferred to here, so a config with no deficit needs no sumolib.
+    if deficit_edges and net is not None:
+        from sumolib import geomhelper
+    for group, chosen in zip(existing["groups"], chosen_by_group):
+        if not deficit_edges or net is None:
+            break
+        count = int(group["count"])
+        if len(chosen) >= count:
+            continue
+        edge_id = str(group["edge"])
+        shape = None
+        try:
+            lanes = net.getEdge(edge_id).getLanes()
+            if lanes:
+                shape = [(float(p[0]), float(p[1])) for p in lanes[0].getShape()]
+        except Exception:
+            shape = None
+        if not shape or len(shape) < 2:
+            continue
+        extra = []
+        for m, hx, hy in all_points:
+            bid = str(m["building_id"])
+            if bid in used:
+                continue
+            _, dist = geomhelper.polygonOffsetAndDistanceToPoint(
+                (hx, hy), shape, perpendicular=False
+            )
+            if dist <= cap_radius_m:
+                extra.append((float(dist), bid, m))
+        extra.sort(key=lambda r: (r[0], r[1]))
+        for _dist, bid, m in extra[: count - len(chosen)]:
+            chosen.append(m)
+            used.add(bid)
+            n_widened += 1
+
+    groups_out = []
+    for group, chosen in zip(existing["groups"], chosen_by_group):
+        count = int(group["count"])
+        entry = dict(group)
+        home_xy: List = []
+        building_id: List = []
+        for i in range(count):
+            if i < len(chosen):
+                home_xy.append([chosen[i]["home_x"], chosen[i]["home_y"]])
+                building_id.append(str(chosen[i]["building_id"]))
+            else:
+                home_xy.append(None)
+                building_id.append(None)
+                n_fallback += 1
+        entry["home_xy"] = home_xy
+        entry["building_id"] = building_id
+        groups_out.append(entry)
+
+    config = dict(existing)
+    config["groups"] = groups_out
+    total = sum(int(g["count"]) for g in existing["groups"])
+    report = {
+        "households": total,
+        "matched_direct": n_direct,
+        "matched_widened": n_widened,
+        "edge_fallback": n_fallback,
+        "deficit_edges": deficit_edges,
+        "cap_radius_m": cap_radius_m,
+    }
+    return config, report
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +665,28 @@ def main():
         "--extra-types", nargs="*", default=[],
         help="Additional edge types to consider drivable (e.g., highway.track).",
     )
+    parser.add_argument(
+        "--attach-centroids-to",
+        help="Path to an existing compact spawns.json. Holds its edges and counts fixed "
+             "and only attaches building centroids, so the output is the same household "
+             "population with building geometry. Ignores --mode, --count and --dest-edge.",
+    )
+    parser.add_argument(
+        "--allow-highway-spawn", action="store_true",
+        help="Let a household spawn on a motorway or trunk road when that is the nearest. "
+             "Off by default, since a driveway does not meet a limited-access highway.",
+    )
+    parser.add_argument(
+        "--snap", choices=["exact", "midpoint"], default="exact",
+        help="How a building picks its edge. exact measures to the edge polyline, the "
+             "same way the simulation measures hazard distance. midpoint reproduces the "
+             "original nearest-middle-vertex behaviour. (default: exact)",
+    )
+    parser.add_argument(
+        "--attach-cap-radius", type=float, default=600.0,
+        help="How far the widened search may reach from an edge polyline when a group "
+             "needs more households than that edge has buildings. (default: 600)",
+    )
     args = parser.parse_args()
 
     # 1. Parse buildings
@@ -429,25 +717,42 @@ def main():
     drivable = set(_DRIVABLE_TYPES)
     for extra in args.extra_types:
         drivable.add(extra.strip())
+    if not args.allow_highway_spawn:
+        drivable -= _EXCLUDED_SPAWN_TYPES
 
     matches = find_nearest_edges(
         net, buildings,
         max_distance_m=args.max_distance,
         drivable_types=drivable,
+        method=args.snap,
     )
 
     if not matches:
         print("[SPAWNS] No buildings matched to edges. Try increasing --max-distance.")
         return 1
 
-    # 5. Generate spawn config
-    config = generate_spawn_config(
-        matches,
-        mode=args.mode,
-        count=args.count,
-        dest_edge=args.dest_edge,
-        output_format=args.output_format,
-    )
+    # 5. Generate spawn config, or annotate an existing one in place of generating.
+    if args.attach_centroids_to:
+        with open(args.attach_centroids_to) as f:
+            existing = json.load(f)
+        config, report = attach_centroids_to_existing(
+            existing, matches, net, cap_radius_m=args.attach_cap_radius,
+        )
+        print(f"[SPAWNS] attached to {args.attach_centroids_to}")
+        print(f"[SPAWNS] households {report['households']}, "
+              f"direct {report['matched_direct']}, "
+              f"widened {report['matched_widened']}, "
+              f"edge fallback {report['edge_fallback']}")
+        for edge_id, want_n, got_n in report["deficit_edges"]:
+            print(f"[SPAWNS]   deficit edge {edge_id} needed {want_n}, had {got_n} nearby")
+    else:
+        config = generate_spawn_config(
+            matches,
+            mode=args.mode,
+            count=args.count,
+            dest_edge=args.dest_edge,
+            output_format=args.output_format,
+        )
 
     # 6. Write output
     out_path = Path(args.output)
