@@ -515,3 +515,272 @@ class TestCorridorFlow:
     def test_no_corridors_configured_reports_empty(self, tmp_path):
         c = _make_collector(tmp_dir=str(tmp_path))
         assert c.compute_corridor_flow() == {}
+
+
+# --- Time margin: headroom between leaving home and the fire reaching that street ---
+
+def _margin_collector(tmp_path, warn_s=600.0):
+    """A collector with four households, one per home edge, and no order schedule."""
+    base = os.path.join(str(tmp_path), "run_metrics.json")
+    return RunMetricsCollector(
+        enabled=True, base_path=base, run_mode="record",
+        spawn_edge_by_agent={"a": "e_a", "b": "e_b", "c": "e_c", "d": "e_d"},
+        time_margin_warn_s=warn_s,
+    )
+
+
+class TestTimeMarginStatus:
+    def test_departed_before_arrival_is_cleared(self, tmp_path):
+        c = _margin_collector(tmp_path)
+        c.record_departure("a", 100.0)
+        c.record_home_edge_margin("e_a", 0.0, 500.0)
+        c.record_home_edge_margin("e_a", 1000.0, -500.0)  # crossing interpolates to 500.0
+        row = c.compute_time_margin()["per_agent"]["a"]
+        assert row["status"] == "cleared"
+        assert row["fire_arrival_t_s"] == pytest.approx(500.0)
+        assert row["margin_s"] == pytest.approx(400.0)
+
+    def test_departed_after_arrival_is_caught_at_home(self, tmp_path):
+        c = _margin_collector(tmp_path)
+        c.record_departure("a", 900.0)
+        c.record_home_edge_margin("e_a", 0.0, 500.0)
+        c.record_home_edge_margin("e_a", 1000.0, -500.0)
+        row = c.compute_time_margin()["per_agent"]["a"]
+        assert row["status"] == "caught_at_home"
+        assert row["margin_s"] == pytest.approx(-400.0)
+
+    def test_never_departed_and_fire_arrives_is_caught_at_home(self, tmp_path):
+        c = _margin_collector(tmp_path)
+        c.record_home_edge_margin("e_a", 0.0, -10.0)
+        row = c.compute_time_margin()["per_agent"]["a"]
+        assert row["status"] == "caught_at_home"
+        assert row["margin_s"] is None
+
+    def test_departed_and_fire_never_arrives_is_never_threatened(self, tmp_path):
+        c = _margin_collector(tmp_path)
+        c.record_departure("a", 100.0)
+        c.record_home_edge_margin("e_a", 0.0, 900.0)
+        c.record_home_edge_margin("e_a", 600.0, 350.0)
+        row = c.compute_time_margin()["per_agent"]["a"]
+        assert row["status"] == "never_threatened"
+        assert row["margin_s"] is None
+        assert row["closest_approach_m"] == pytest.approx(350.0)
+        assert row["closest_approach_t_s"] == pytest.approx(600.0)
+
+    def test_stayed_and_fire_never_arrives_is_never_departed_safe(self, tmp_path):
+        c = _margin_collector(tmp_path)
+        c.record_home_edge_margin("e_a", 0.0, 900.0)
+        assert c.compute_time_margin()["per_agent"]["a"]["status"] == "never_departed_safe"
+
+
+class TestTimeMarginArrivalInterpolation:
+    def test_crossing_interpolated_between_bracketing_samples(self, tmp_path):
+        c = _margin_collector(tmp_path)
+        # 300 m at t=0 falling to -100 m at t=400 crosses zero three quarters of the way.
+        c.record_home_edge_margin("e_a", 0.0, 300.0)
+        c.record_home_edge_margin("e_a", 400.0, -100.0)
+        assert c._home_edge_arrival_t["e_a"] == pytest.approx(300.0)
+
+    def test_first_sample_already_negative_uses_sample_time(self, tmp_path):
+        c = _margin_collector(tmp_path)
+        c.record_home_edge_margin("e_a", 240.0, -50.0)
+        assert c._home_edge_arrival_t["e_a"] == pytest.approx(240.0)
+
+    def test_exact_zero_sample_uses_sample_time(self, tmp_path):
+        c = _margin_collector(tmp_path)
+        c.record_home_edge_margin("e_a", 0.0, 300.0)
+        c.record_home_edge_margin("e_a", 400.0, 0.0)
+        assert c._home_edge_arrival_t["e_a"] == pytest.approx(400.0)
+
+    def test_first_crossing_wins(self, tmp_path):
+        c = _margin_collector(tmp_path)
+        c.record_home_edge_margin("e_a", 100.0, -10.0)
+        c.record_home_edge_margin("e_a", 900.0, -800.0)
+        assert c._home_edge_arrival_t["e_a"] == pytest.approx(100.0)
+
+
+class TestTimeMarginClosestApproach:
+    def test_tracks_minimum_and_its_time(self, tmp_path):
+        c = _margin_collector(tmp_path)
+        c.record_home_edge_margin("e_a", 0.0, 900.0)
+        c.record_home_edge_margin("e_a", 240.0, 120.0)
+        c.record_home_edge_margin("e_a", 480.0, 400.0)  # fire receding, minimum stands
+        closest = c._home_edge_closest["e_a"]
+        assert closest["margin_m"] == pytest.approx(120.0)
+        assert closest["t_s"] == pytest.approx(240.0)
+
+    def test_non_finite_margin_ignored(self, tmp_path):
+        c = _margin_collector(tmp_path)
+        c.record_home_edge_margin("e_a", 0.0, float("inf"))
+        c.record_home_edge_margin("e_b", 0.0, None)
+        assert "e_a" not in c._home_edge_closest
+        assert "e_b" not in c._home_edge_closest
+        json.dumps(c.compute_time_margin())  # must not emit Infinity
+
+    def test_disabled_collector_records_nothing(self, tmp_path):
+        c = _make_collector(enabled=False, tmp_dir=str(tmp_path))
+        c.record_home_edge_margin("e_a", 0.0, 100.0)
+        assert c._home_edge_closest == {}
+        assert c._home_edge_arrival_t == {}
+
+
+class TestTimeMarginAggregates:
+    def _populated(self, tmp_path, warn_s=600.0):
+        """a cleared with 400 s, b cleared with 900 s, c caught, d never threatened."""
+        c = _margin_collector(tmp_path, warn_s=warn_s)
+        for agent, edge, depart_t in (("a", "e_a", 100.0), ("b", "e_b", 100.0), ("c", "e_c", 900.0)):
+            c.record_departure(agent, depart_t)
+            c.record_home_edge_margin(edge, 0.0, 500.0)
+        c.record_home_edge_margin("e_a", 1000.0, -500.0)   # arrival 500, margin 400
+        c.record_home_edge_margin("e_b", 2000.0, -500.0)   # arrival 1000, margin 900
+        c.record_home_edge_margin("e_c", 1000.0, -500.0)   # arrival 500, margin -400
+        c.record_departure("d", 50.0)
+        c.record_home_edge_margin("e_d", 0.0, 800.0)
+        return c
+
+    def test_headline_counts(self, tmp_path):
+        tm = self._populated(tmp_path).compute_time_margin()
+        assert tm["status_counts"] == {
+            "cleared": 2, "caught_at_home": 1,
+            "never_threatened": 1, "never_departed_safe": 0,
+        }
+        assert tm["n_threatened"] == 3
+        assert tm["n_censored"] == 1
+        assert tm["n_caught_at_home"] == 1
+
+    def test_tightest_margin_and_warn_count(self, tmp_path):
+        tm = self._populated(tmp_path).compute_time_margin()
+        assert tm["tightest_margin_s"] == pytest.approx(-400.0)
+        assert tm["n_under_warn"] == 2  # -400 and 400 are at or below 600
+
+    def test_warn_threshold_override(self, tmp_path):
+        c = self._populated(tmp_path)
+        assert c.compute_time_margin(warn_s=1200.0)["n_under_warn"] == 3
+        assert c.compute_time_margin(warn_s=0.0)["n_under_warn"] == 1
+
+    def test_constructor_warn_threshold_is_the_default(self, tmp_path):
+        tm = self._populated(tmp_path, warn_s=1200.0).compute_time_margin()
+        assert tm["warn_s"] == pytest.approx(1200.0)
+        assert tm["n_under_warn"] == 3
+
+    def test_margin_distribution_covers_threatened_only(self, tmp_path):
+        dist = self._populated(tmp_path).compute_time_margin()["margin_s"]
+        assert dist["count"] == 3
+        assert dist["min"] == pytest.approx(-400.0)
+        assert dist["max"] == pytest.approx(900.0)
+        assert dist["median"] == pytest.approx(400.0)
+
+    def test_closest_approach_distribution_covers_censored_only(self, tmp_path):
+        dist = self._populated(tmp_path).compute_time_margin()["closest_approach_m"]
+        assert dist["count"] == 1
+        assert dist["min"] == pytest.approx(800.0)
+
+    def test_empty_run_reports_null_distributions(self, tmp_path):
+        tm = _margin_collector(tmp_path).compute_time_margin()
+        assert tm["tightest_margin_s"] is None
+        assert tm["margin_s"] == {
+            "count": 0, "min": None, "p10": None, "median": None, "mean": None, "max": None,
+        }
+        assert tm["status_counts"]["never_departed_safe"] == 4
+
+
+class TestTimeMarginInSummary:
+    def test_summary_carries_time_margin(self, tmp_path):
+        c = _margin_collector(tmp_path)
+        c.record_departure("a", 100.0)
+        c.record_home_edge_margin("e_a", 0.0, 500.0)
+        c.record_home_edge_margin("e_a", 1000.0, -500.0)
+        s = c.summary()
+        assert s["time_margin"]["n_threatened"] == 1
+        json.dumps(s)  # must not raise
+
+class TestTimeMarginGeometryBasis:
+    def _edge_basis(self, tmp_path):
+        """Two households on one shared spawn edge, sampled once per edge."""
+        base = os.path.join(str(tmp_path), "run_metrics.json")
+        return RunMetricsCollector(
+            enabled=True, base_path=base, run_mode="record",
+            spawn_edge_by_agent={"a": "e_a", "b": "e_a"},
+        )
+
+    def _centroid_basis(self, tmp_path):
+        """The same two households, each sampled at its own building point."""
+        base = os.path.join(str(tmp_path), "run_metrics.json")
+        return RunMetricsCollector(
+            enabled=True, base_path=base, run_mode="record",
+            spawn_edge_by_agent={"a": "e_a", "b": "e_a"},
+            home_key_by_agent={"a": "a", "b": "b"},
+            geometry_basis="building_centroid",
+        )
+
+    def test_default_basis_is_edge(self, tmp_path):
+        c = self._edge_basis(tmp_path)
+        assert c.compute_time_margin()["geometry_basis"] == "edge"
+
+    def test_declared_basis_is_reported(self, tmp_path):
+        c = self._centroid_basis(tmp_path)
+        assert c.compute_time_margin()["geometry_basis"] == "building_centroid"
+
+    def test_edge_basis_shares_one_arrival_across_the_street(self, tmp_path):
+        c = self._edge_basis(tmp_path)
+        c.record_departure("a", 100.0)
+        c.record_departure("b", 100.0)
+        c.record_home_edge_margin("e_a", 0.0, 500.0)
+        c.record_home_edge_margin("e_a", 1000.0, -500.0)
+        rows = c.compute_time_margin()["per_agent"]
+        assert rows["a"]["fire_arrival_t_s"] == rows["b"]["fire_arrival_t_s"]
+        assert rows["a"]["margin_s"] == pytest.approx(400.0)
+
+    def test_centroid_basis_resolves_per_household(self, tmp_path):
+        c = self._centroid_basis(tmp_path)
+        c.record_departure("a", 100.0)
+        c.record_departure("b", 100.0)
+        # Same street, but b's building sits closer to the fire.
+        c.record_home_edge_margin("a", 0.0, 500.0)
+        c.record_home_edge_margin("a", 1000.0, -500.0)   # arrival 500
+        c.record_home_edge_margin("b", 0.0, 100.0)
+        c.record_home_edge_margin("b", 1000.0, -900.0)   # arrival 100
+        rows = c.compute_time_margin()["per_agent"]
+        assert rows["a"]["fire_arrival_t_s"] == pytest.approx(500.0)
+        assert rows["b"]["fire_arrival_t_s"] == pytest.approx(100.0)
+        assert rows["a"]["margin_s"] == pytest.approx(400.0)
+        assert rows["b"]["margin_s"] == pytest.approx(0.0)
+        assert rows["b"]["status"] == "caught_at_home"
+
+    def test_home_edge_still_reported_under_centroid_basis(self, tmp_path):
+        c = self._centroid_basis(tmp_path)
+        c.record_home_edge_margin("a", 0.0, 100.0)
+        assert c.compute_time_margin()["per_agent"]["a"]["home_edge"] == "e_a"
+
+    def test_agent_without_a_centroid_keeps_its_edge_key(self, tmp_path):
+        # A partially annotated config, where b has a building and a does not.
+        base = os.path.join(str(tmp_path), "run_metrics.json")
+        c = RunMetricsCollector(
+            enabled=True, base_path=base, run_mode="record",
+            spawn_edge_by_agent={"a": "e_a", "b": "e_b"},
+            home_key_by_agent={"a": "e_a", "b": "b"},
+            geometry_basis="building_centroid",
+        )
+        c.record_departure("a", 10.0)
+        c.record_home_edge_margin("e_a", 0.0, -5.0)
+        c.record_home_edge_margin("b", 0.0, 900.0)
+        rows = c.compute_time_margin()["per_agent"]
+        assert rows["a"]["status"] == "caught_at_home"
+        assert rows["b"]["status"] == "never_departed_safe"
+
+    def test_summary_carries_the_basis(self, tmp_path):
+        s = self._centroid_basis(tmp_path).summary()
+        assert s["time_margin"]["geometry_basis"] == "building_centroid"
+
+
+class TestTimeMarginInSummaryExtras:
+    def test_fire_reach_companion_count_unchanged_by_repeat_sampling(self, tmp_path):
+        # The sim now samples every home edge every round, so the crossing recorder must
+        # still keep only the earliest crossing.
+        c = _margin_collector(tmp_path)
+        for t_s, margin in ((0.0, 500.0), (240.0, -10.0), (480.0, -200.0)):
+            c.record_home_edge_margin("e_a", t_s, margin)
+            if margin <= 0.0:
+                c.record_fire_reached_edge("e_a", t_s)
+        assert c._fire_reached_edges["e_a"] == pytest.approx(240.0)
+        assert c.compute_non_evacuated_reached_by_fire()["agent_ids"] == ["a"]

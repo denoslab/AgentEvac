@@ -50,7 +50,9 @@ python -m pytest tests/
 
 **Key CLI flags for the simulation:** `--scenario` (no_notice|alert_guided|advice_guided), `--messaging` (on|off), `--events` (on|off), `--web-dashboard` (on|off), `--metrics` (on|off), `--overlays` (on|off).
 
-**Key environment variables:** `OPENAI_MODEL` (default: `gpt-4o-mini`), `DECISION_PERIOD_S` (default: `5.0`), `NET_FILE` (default: `sumo/Repaired.net.xml`), `SUMO_CFG` (default: `sumo/Repaired.sumocfg`), `RUN_MODE`, `REPLAY_LOG_PATH`, `EVENTS_LOG_PATH`, `METRICS_LOG_PATH`.
+**Key environment variables:** `OPENAI_MODEL` (default: `gpt-4o-mini`), `DECISION_PERIOD_S` (default: `240.0`), `SIM_STEP_LENGTH_S` (default: `0.2`), `NET_FILE` (default: `sumo/Repaired.net.xml`), `SUMO_CFG` (default: `sumo/Repaired.sumocfg`), `RUN_MODE`, `REPLAY_LOG_PATH`, `EVENTS_LOG_PATH`, `METRICS_LOG_PATH`.
+
+The simulator runs on two clocks. The SUMO integration step is `SIM_STEP_LENGTH_S` (0.2 s) and one LLM decision round is `DECISION_PERIOD_S` (240 s), so a decision round spans 1200 SUMO steps. `DECISION_PERIOD_S` must be an integer multiple of `SIM_STEP_LENGTH_S`.
 
 ## Architecture
 

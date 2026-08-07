@@ -111,11 +111,15 @@ def load_map_config(map_name: str) -> Dict[str, Any]:
 
 def spawns_to_tuples(
     spawns: List[Dict[str, Any]],
+    home_points_out: Optional[Dict[str, Tuple[float, float]]] = None,
 ) -> List[SpawnTuple]:
     """Convert spawn dicts from JSON into the legacy tuple format used by main.py.
 
     Args:
         spawns: List of spawn event dicts from ``spawns.json``.
+        home_points_out: Optional dict filled with ``{veh_id: (x, y)}`` for any agent
+            carrying a ``home_xy`` building centroid in SUMO XY coordinates.  Left alone
+            when ``None``, so callers that do not need home geometry are unaffected.
 
     Returns:
         List of ``(veh_id, spawn_edge, dest_edge, depart_time, lane, pos, speed, color)``
@@ -124,8 +128,13 @@ def spawns_to_tuples(
     result = []
     for s in spawns:
         color = tuple(s["color"]) if "color" in s else (255, 0, 0, 255)
+        veh_id = str(s["veh_id"])
+        if home_points_out is not None:
+            point = _parse_home_xy(s.get("home_xy"))
+            if point is not None:
+                home_points_out[veh_id] = point
         result.append((
-            str(s["veh_id"]),
+            veh_id,
             str(s["spawn_edge"]),
             str(s["dest_edge"]),
             float(s["depart_time"]),
@@ -137,9 +146,20 @@ def spawns_to_tuples(
     return result
 
 
+def _parse_home_xy(raw: Any) -> Optional[Tuple[float, float]]:
+    """Coerce a ``home_xy`` entry into an ``(x, y)`` pair, or ``None`` if unusable."""
+    if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+        return None
+    try:
+        return (float(raw[0]), float(raw[1]))
+    except (TypeError, ValueError):
+        return None
+
+
 def expand_spawn_groups(
     groups: List[Dict[str, Any]],
     default_dest_edge: str,
+    home_points_out: Optional[Dict[str, Tuple[float, float]]] = None,
 ) -> List[SpawnTuple]:
     """Expand compact spawn groups into the full tuple list.
 
@@ -154,6 +174,11 @@ def expand_spawn_groups(
         ``lane``             — SUMO departure lane (default: ``"first"``).
         ``speed``            — SUMO departure speed (default: ``"max"``).
         ``color``            — fixed RGBA for all agents in group (default: palette cycle).
+        ``home_xy``          — list of ``[x, y]`` building centroids in SUMO XY, one per
+                               agent in ``count`` order.  Entries beyond the list length,
+                               and groups without the key, simply carry no home point.
+        ``building_id``      — list of source building IDs parallel to ``home_xy``, kept
+                               for provenance and for later building-level area selection.
 
     Agent IDs are ``"<edge_id>_1"``, ``"<edge_id>_2"``, etc.  If the same edge
     appears in multiple groups, a group suffix ``"_g<n>"`` is appended to avoid
@@ -166,6 +191,9 @@ def expand_spawn_groups(
         groups: List of compact group dicts.
         default_dest_edge: Fallback destination edge (e.g., first entry in
             ``destinations.json``).
+        home_points_out: Optional dict filled with ``{veh_id: (x, y)}`` from each group's
+            ``home_xy`` list.  Filled in the same loop that generates the IDs, so a home
+            point can never drift onto the wrong agent.  Left alone when ``None``.
 
     Returns:
         List of spawn tuples in the same format as ``spawns_to_tuples``.
@@ -194,12 +222,17 @@ def expand_spawn_groups(
         lane = str(group.get("lane", "first"))
         speed = str(group.get("speed", "max"))
         fixed_color = tuple(group["color"]) if "color" in group else None
+        home_xy = group.get("home_xy") or []
 
         for i in range(1, count + 1):
             veh_id = f"{prefix}_{i}"
             depart_time = interval * (i - 1)
             pos = str(_DEFAULT_POS_START_M + _DEFAULT_POS_SPACING_M * (i - 1))
             color = fixed_color or _COLOR_PALETTE[(i - 1) % len(_COLOR_PALETTE)]
+            if home_points_out is not None and i - 1 < len(home_xy):
+                point = _parse_home_xy(home_xy[i - 1])
+                if point is not None:
+                    home_points_out[veh_id] = point
             result.append((veh_id, edge, dest, depart_time, lane, pos, speed, color))
 
     return result
@@ -277,6 +310,7 @@ def validate_spawn_positions(
 def load_spawns(
     raw: Any,
     destinations: List[Dict[str, Any]],
+    home_points_out: Optional[Dict[str, Tuple[float, float]]] = None,
 ) -> List[SpawnTuple]:
     """Detect spawn format (detailed list or compact groups) and produce tuples.
 
@@ -285,12 +319,15 @@ def load_spawns(
             dict with a ``"groups"`` key (compact).
         destinations: Parsed ``destinations.json`` list (used for default
             ``dest_edge`` in compact mode).
+        home_points_out: Optional dict filled with ``{veh_id: (x, y)}`` building centroids
+            in SUMO XY.  Stays empty for configs without ``home_xy``, which is how the
+            simulation decides between the edge and building-centroid hazard basis.
 
     Returns:
         List of spawn tuples ready for the simulation loop.
     """
     if isinstance(raw, list):
-        return spawns_to_tuples(raw)
+        return spawns_to_tuples(raw, home_points_out=home_points_out)
 
     if isinstance(raw, dict) and "groups" in raw:
         default_dest = str(raw.get("default_dest_edge", ""))
@@ -301,7 +338,9 @@ def load_spawns(
                 "Compact spawn format requires either 'default_dest_edge' in "
                 "spawns.json or at least one entry in destinations.json."
             )
-        return expand_spawn_groups(raw["groups"], default_dest)
+        return expand_spawn_groups(
+            raw["groups"], default_dest, home_points_out=home_points_out
+        )
 
     raise ValueError(
         "spawns.json must be either a JSON array (detailed format) or "

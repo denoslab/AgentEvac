@@ -61,6 +61,9 @@ class RunMetricsCollector:
         ordered_areas: Optional[Dict[str, Dict[str, Any]]] = None,
         corridor_edges: Optional[Dict[str, List[str]]] = None,
         spawn_edge_by_agent: Optional[Dict[str, str]] = None,
+        time_margin_warn_s: float = 600.0,
+        home_key_by_agent: Optional[Dict[str, str]] = None,
+        geometry_basis: str = "edge",
     ):
         """Create a collector.
 
@@ -77,6 +80,15 @@ class RunMetricsCollector:
                 geometry during E0 validation, in which case the flow split reports empty.
             spawn_edge_by_agent: Map agent ID -> spawn edge, used to decide which agents
                 belong to an ordered area and to count non-evacuees the fire reaches.
+            time_margin_warn_s: Margin threshold in seconds below which a household counts
+                as a close call in :meth:`compute_time_margin`.
+            home_key_by_agent: Map agent ID -> the key its home fire-margin samples arrive
+                under.  Defaults to ``spawn_edge_by_agent``, meaning one shared sample per
+                spawn edge.  A config carrying building centroids passes one key per
+                household instead, so time margin resolves per household.
+            geometry_basis: What the home margin is measured from, ``edge`` for the spawn
+                edge polyline or ``building_centroid`` for the household's own point.
+                Reported in the summary so the two experiment batches stay distinguishable.
         """
         self.enabled = bool(enabled)
         self.run_mode = str(run_mode)
@@ -113,6 +125,18 @@ class RunMetricsCollector:
         self._awareness: Dict[str, Dict[str, Any]] = {}
         # Spawn edges the fire has crossed, and when, for the non-evacuee companion count.
         self._fire_reached_edges: Dict[str, float] = {}
+        # Time margin: per home edge, the interpolated fire-arrival instant, the closest the
+        # fire ever came, and the previous sample used to interpolate the zero crossing.
+        self._time_margin_warn_s = float(time_margin_warn_s)
+        self._geometry_basis = str(geometry_basis)
+        self._home_key_by_agent: Dict[str, str] = (
+            {str(a): str(k) for a, k in home_key_by_agent.items()}
+            if home_key_by_agent
+            else dict(self._spawn_edge_by_agent)
+        )
+        self._home_edge_arrival_t: Dict[str, float] = {}
+        self._home_edge_closest: Dict[str, Dict[str, float]] = {}
+        self._home_edge_prev_sample: Dict[str, Tuple[float, float]] = {}
         # Corridor edge reverse index and the distinct agents seen on each corridor.
         self._corridor_edge_index: Dict[str, Set[str]] = {}
         self._corridor_agents: Dict[str, Set[str]] = {}
@@ -378,6 +402,60 @@ class RunMetricsCollector:
         edge = str(edge_id)
         if edge not in self._fire_reached_edges:
             self._fire_reached_edges[edge] = float(sim_t_s)
+
+    def record_home_edge_margin(
+        self,
+        home_key: str,
+        sim_t_s: float,
+        margin_m: Optional[float],
+    ) -> None:
+        """Record one fire-margin sample at a household's home location.
+
+        ``home_key`` is whatever the run measures homes by, meaning the spawn edge under
+        the edge basis and a per-household key under the building-centroid basis.  The
+        collector does no geometry of its own, so the caller decides the basis and the
+        matching ``home_key_by_agent`` map.
+
+        Called once per home key per decision round with the same margin the hazard
+        model computes for any other location.  Two quantities accumulate.  The fire-arrival
+        instant is the first time the margin goes non-positive, linearly interpolated
+        against the previous positive sample so arrival is not quantised to the sampling
+        cadence.  The closest approach is the smallest margin ever seen at that home and
+        the time it occurred, which is what the metric falls back on for the homes the
+        fire never reaches.
+
+        Non-finite margins are ignored, which is what the hazard model returns before any
+        fire is active or when the location has no usable geometry.
+
+        Args:
+            home_key: Key the household's home is measured under.
+            sim_t_s: Current simulation time in seconds.
+            margin_m: Fire margin in metres at that home, negative once overtaken.
+        """
+        if not self.enabled or margin_m is None:
+            return
+        margin = float(margin_m)
+        if not math.isfinite(margin):
+            return
+        edge = str(home_key)
+        t_s = float(sim_t_s)
+
+        closest = self._home_edge_closest.get(edge)
+        if closest is None or margin < closest["margin_m"]:
+            self._home_edge_closest[edge] = {"margin_m": margin, "t_s": t_s}
+
+        if margin <= 0.0 and edge not in self._home_edge_arrival_t:
+            arrival_t = t_s
+            prev = self._home_edge_prev_sample.get(edge)
+            if prev is not None:
+                prev_t, prev_margin = prev
+                if prev_margin > 0.0 and t_s > prev_t:
+                    # prev_margin > 0 >= margin, so the denominator is strictly positive.
+                    frac = prev_margin / (prev_margin - margin)
+                    arrival_t = prev_t + frac * (t_s - prev_t)
+            self._home_edge_arrival_t[edge] = arrival_t
+
+        self._home_edge_prev_sample[edge] = (t_s, margin)
 
     def record_conflict_sample(
         self,
@@ -682,6 +760,119 @@ class RunMetricsCollector:
                 reached.append(agent_id)
         return {"count": len(reached), "agent_ids": sorted(reached)}
 
+    @staticmethod
+    def _quantile(sorted_vals: List[float], q: float) -> float:
+        """Return the ``q`` quantile of an already-sorted list by linear interpolation."""
+        n = len(sorted_vals)
+        if n == 1:
+            return float(sorted_vals[0])
+        pos = q * (n - 1)
+        lo = int(math.floor(pos))
+        hi = min(lo + 1, n - 1)
+        frac = pos - lo
+        return float(sorted_vals[lo]) * (1.0 - frac) + float(sorted_vals[hi]) * frac
+
+    @classmethod
+    def _distribution(cls, values: List[float]) -> Dict[str, Any]:
+        """Summarise a sample as count, min, p10, median, mean, and max."""
+        if not values:
+            return {"count": 0, "min": None, "p10": None, "median": None, "mean": None, "max": None}
+        ordered = sorted(float(v) for v in values)
+        return {
+            "count": len(ordered),
+            "min": round(ordered[0], 2),
+            "p10": round(cls._quantile(ordered, 0.10), 2),
+            "median": round(cls._quantile(ordered, 0.50), 2),
+            "mean": round(sum(ordered) / float(len(ordered)), 2),
+            "max": round(ordered[-1], 2),
+        }
+
+    def compute_time_margin(self, warn_s: Optional[float] = None) -> Dict[str, Any]:
+        """Compute how much time each household had between leaving and the fire arriving.
+
+        For a household whose home edge the fire reached, the margin is
+        ``fire_arrival_t_s - depart_t_s``, so a non-positive value means the fire arrived
+        while the household was still home.  For a household the fire never reached, the
+        margin is undefined and the closest the fire ever came is reported instead, which
+        keeps the metric informative on scenarios where the fire footprint stays clear of
+        the populated edges.
+
+        Each household falls into one status.  ``cleared`` left before the fire arrived,
+        ``caught_at_home`` was still home when it arrived or never departed at all,
+        ``never_threatened`` departed from an edge the fire never reached, and
+        ``never_departed_safe`` stayed on an edge the fire never reached.
+
+        Args:
+            warn_s: Close-call threshold in seconds.  Defaults to the collector's
+                ``time_margin_warn_s``.
+
+        Returns:
+            Dict with ``warn_s``, ``geometry_basis``, ``status_counts``, the headline
+            counts ``n_threatened``, ``n_censored``, ``n_caught_at_home``,
+            ``n_under_warn``, and ``tightest_margin_s``, the ``margin_s`` and
+            ``closest_approach_m`` distributions, and a ``per_agent`` row per household.
+            ``geometry_basis`` says whether homes were measured at the spawn edge or at
+            the building centroid, so runs from the two batches are never pooled.
+        """
+        warn = float(self._time_margin_warn_s if warn_s is None else warn_s)
+        per_agent: Dict[str, Any] = {}
+        margins: List[float] = []
+        closest_approaches: List[float] = []
+        status_counts = {
+            "cleared": 0,
+            "caught_at_home": 0,
+            "never_threatened": 0,
+            "never_departed_safe": 0,
+        }
+
+        for agent_id, home_edge in self._spawn_edge_by_agent.items():
+            edge = str(home_edge)
+            key = self._home_key_by_agent.get(agent_id, edge)
+            depart_t = self._depart_times.get(agent_id)
+            arrival_t = self._home_edge_arrival_t.get(key)
+            closest = self._home_edge_closest.get(key)
+
+            margin: Optional[float] = None
+            if arrival_t is not None and depart_t is not None:
+                margin = float(arrival_t) - float(depart_t)
+
+            if arrival_t is None:
+                status = "never_threatened" if depart_t is not None else "never_departed_safe"
+                if closest is not None:
+                    closest_approaches.append(float(closest["margin_m"]))
+            elif margin is None or margin <= 0.0:
+                status = "caught_at_home"
+            else:
+                status = "cleared"
+            status_counts[status] += 1
+
+            if margin is not None:
+                margins.append(margin)
+
+            per_agent[agent_id] = {
+                "home_edge": edge,
+                "status": status,
+                "depart_t_s": (round(float(depart_t), 2) if depart_t is not None else None),
+                "fire_arrival_t_s": (round(float(arrival_t), 2) if arrival_t is not None else None),
+                "margin_s": (round(margin, 2) if margin is not None else None),
+                "closest_approach_m": (round(float(closest["margin_m"]), 2) if closest else None),
+                "closest_approach_t_s": (round(float(closest["t_s"]), 2) if closest else None),
+            }
+
+        return {
+            "warn_s": warn,
+            "geometry_basis": self._geometry_basis,
+            "status_counts": status_counts,
+            "n_threatened": status_counts["cleared"] + status_counts["caught_at_home"],
+            "n_censored": status_counts["never_threatened"] + status_counts["never_departed_safe"],
+            "n_caught_at_home": status_counts["caught_at_home"],
+            "n_under_warn": sum(1 for m in margins if m <= warn),
+            "tightest_margin_s": (round(min(margins), 2) if margins else None),
+            "margin_s": self._distribution(margins),
+            "closest_approach_m": self._distribution(closest_approaches),
+            "per_agent": per_agent,
+        }
+
     def compute_departure_reasons(self) -> Dict[str, int]:
         """Return a histogram of stored departure reasons."""
         counts: Dict[str, int] = {}
@@ -725,6 +916,9 @@ class RunMetricsCollector:
             "area_clearance": self.compute_area_clearance(),
             "corridor_flow": self.compute_corridor_flow(),
             "non_evacuated_reached_by_fire": self.compute_non_evacuated_reached_by_fire(),
+            # Time margin turns the exposure index into minutes of headroom per household,
+            # and falls back to the closest approach where the fire never arrives.
+            "time_margin": self.compute_time_margin(),
             "departure_reasons": self.compute_departure_reasons(),
             **({"token_usage": self.token_usage} if self.token_usage else {}),
         }

@@ -129,6 +129,7 @@ else:
 
 # Step 3: Add Traci module + sumolib for geometry
 import traci
+import traci.constants as tc
 import sumolib
 from sumolib import geomhelper
 
@@ -332,12 +333,18 @@ _MAP_CFG = load_map_config(CLI_ARGS.map)
 NET_FILE = os.getenv("NET_FILE", _MAP_CFG["map"]["net_file"])
 DESTINATION_LIBRARY = _MAP_CFG["destinations"]
 ROUTE_LIBRARY = _MAP_CFG.get("routes", [])
-SPAWN_EVENTS = load_spawns(_MAP_CFG["spawns"], DESTINATION_LIBRARY)
+# Building centroids, when the config carries them. An empty map means the config is
+# edge-based, which is every config authored before the centroid batch, so the hazard
+# distance to a household's home falls back to its spawn-edge polyline exactly as before.
+SPAWN_HOME_XY: Dict[str, Tuple[float, float]] = {}
+SPAWN_EVENTS = load_spawns(_MAP_CFG["spawns"], DESTINATION_LIBRARY, home_points_out=SPAWN_HOME_XY)
+HOME_GEOMETRY_BASIS = "building_centroid" if SPAWN_HOME_XY else "edge"
 FIRE_SOURCES = _MAP_CFG["fires"]["sources"]
 NEW_FIRE_EVENTS = _MAP_CFG["fires"].get("events", [])
 print(f"[MAP] name={CLI_ARGS.map} net_file={NET_FILE} "
       f"spawns={len(SPAWN_EVENTS)} fires={len(FIRE_SOURCES)}+{len(NEW_FIRE_EVENTS)} "
       f"destinations={len(DESTINATION_LIBRARY)} routes={len(ROUTE_LIBRARY)}")
+print(f"[HOME_GEOMETRY] basis={HOME_GEOMETRY_BASIS} centroids={len(SPAWN_HOME_XY)}/{len(SPAWN_EVENTS)}")
 
 RUN_MODE = (CLI_ARGS.run_mode or os.getenv("RUN_MODE", "record")).lower()  # "record" or "replay"
 SCENARIO_MODE = (CLI_ARGS.scenario or os.getenv("SCENARIO_MODE", "advice_guided")).lower()
@@ -462,6 +469,13 @@ METRICS_ENABLED = _parse_bool(os.getenv("METRICS_ENABLED", "1"), True)
 if CLI_ARGS.metrics is not None:
     METRICS_ENABLED = (CLI_ARGS.metrics == "on")
 METRICS_LOG_PATH = CLI_ARGS.metrics_log_path or os.getenv("METRICS_LOG_PATH", "outputs/run_metrics.json")
+# Close-call threshold for the time-margin metric, meaning how little headroom between a
+# household leaving and the fire reaching its street still counts as a near miss.
+TIME_MARGIN_WARN_S = float(os.getenv("TIME_MARGIN_WARN_S", "600.0"))
+# Per-step position and route line for every vehicle on stdout.  Off by default, since it
+# emits two lines per vehicle per 0.2 s step, which reached 45 MB for a one-hour run and
+# tells you nothing the event log and timeline do not already record.
+VEHICLE_STEP_LOG = _parse_bool(os.getenv("VEHICLE_STEP_LOG", "0"), False)
 PARAMS_LOG_PATH = CLI_ARGS.params_log_path or os.getenv("PARAMS_LOG_PATH", "outputs/run_params.json")
 TIMELINE_ENABLED = _parse_bool(os.getenv("TIMELINE_ENABLED", "1"), True)
 if CLI_ARGS.timeline is not None:
@@ -497,7 +511,10 @@ AGENT_HISTORY_ROUNDS = int(os.getenv("AGENT_HISTORY_ROUNDS", "8"))
 FIRE_TREND_EPS_M = float(os.getenv("FIRE_TREND_EPS_M", "20.0"))
 AGENT_HISTORY_ROUTE_HEAD_EDGES = int(os.getenv("AGENT_HISTORY_ROUTE_HEAD_EDGES", "5"))
 VISUAL_LOOKAHEAD_EDGES = int(os.getenv("VISUAL_LOOKAHEAD_EDGES", "3"))
-FIRE_PERCEPTION_RANGE_M = float(os.getenv("FIRE_PERCEPTION_RANGE_M", "1200"))
+# M2 awareness trigger distance.  At 200 m a household notices an active front only when it
+# is nearly at its street, so most first warnings come from the official channels as the
+# record has it.  Was 1200 m, which tied perception to the routing CAUTION_MIN_MARGIN_M.
+FIRE_PERCEPTION_RANGE_M = float(os.getenv("FIRE_PERCEPTION_RANGE_M", "200"))
 INFO_SIGMA = float(os.getenv("INFO_SIGMA", "40.0"))
 DIST_REF_M = float(os.getenv("DIST_REF_M", "500.0"))
 INFO_DELAY_S = float(os.getenv("INFO_DELAY_S", "0.0"))
@@ -728,7 +745,17 @@ FIRE_WARNING_BUFFER_M = 1200.0
 RISK_DECAY_M = 960.0
 
 # ---- Fire visualization in SUMO-GUI (Shapes) ----
-FIRE_DRAW_ENABLED = True
+# Fire polygons exist for the SUMO GUI only.  Drawing them headless still issues three
+# TraCI commands per fire per step, which on a full-length run with every source alight is
+# several million calls that nothing ever renders.  The operator console reads fire state
+# by calling active_fires() directly, so it is unaffected by this gate.
+FIRE_DRAW_ENABLED = _parse_bool(
+    os.getenv("FIRE_DRAW_ENABLED", "1" if "gui" in SUMO_BINARY.lower() else "0"),
+    "gui" in SUMO_BINARY.lower(),
+)
+# Redraw a fire only once its radius has moved this far, since at 0.2 s steps a front
+# growing at 0.5 m/s advances 0.1 m per step and the GUI cannot show the difference.
+FIRE_REDRAW_DELTA_M = float(os.getenv("FIRE_REDRAW_DELTA_M", "1.0"))
 FIRE_POLY_LAYER = 50         # network is layer 0; higher draws on top :contentReference[oaicite:2]{index=2}
 FIRE_POLY_POINTS = 48        # circle smoothness (more points = smoother, slower)
 FIRE_RGBA = (255, 0, 0, 80)  # red with transparency; alpha 0 is fully transparent :contentReference[oaicite:3]{index=3}
@@ -765,6 +792,7 @@ def active_fires(sim_t_s: float) -> List[Dict[str, float]]:
     return fires
 
 _fire_poly_ids = set()       # track which polygon IDs we have created
+_fire_drawn_radius: Dict[str, float] = {}   # last radius actually pushed to the GUI
 
 
 # Throttle (optional)
@@ -1571,6 +1599,9 @@ def _run_parameter_payload() -> Dict[str, Any]:
         "softmax_tau": SOFTMAX_TAU if AGENT_TYPE == "rule_based" else None,
         "control_mode": CONTROL_MODE,
         "sim_end_time_s": SIM_END_TIME_S,
+        "time_margin_warn_s": TIME_MARGIN_WARN_S,
+        "home_geometry_basis": HOME_GEOMETRY_BASIS,
+        "home_centroid_count": len(SPAWN_HOME_XY),
         "decision_period_s": DECISION_PERIOD_S,
         "sim_step_length_s": SIM_STEP_LENGTH_S,
         "decision_period_steps": int(round(DECISION_PERIOD_S / max(SIM_STEP_LENGTH_S, 1e-9))),
@@ -1691,6 +1722,25 @@ events = LiveEventStream(EVENTS_ENABLED, EVENTS_LOG_PATH, EVENTS_STDOUT)
 # reports empty until they are, per the Part J plan.
 _corridors_cfg = _MAP_CFG.get("corridors")
 _CORRIDOR_EDGES = _corridors_cfg if isinstance(_corridors_cfg, dict) else {}
+# Distinct spawn edges and a seen-set drive the non-evacuee fire-reach companion count.
+# That companion count stays edge-keyed under both geometry bases, so it stays comparable
+# across the edge and building-centroid experiment batches.
+_DISTINCT_SPAWN_EDGES = sorted(set(SPAWN_EDGE_BY_AGENT.values()))
+_FIRE_REACHED_SEEN = set()
+# Under the building-centroid basis each household is sampled at its own point, so time
+# margin resolves per household instead of per spawn edge.  A household whose config row
+# carried no centroid keeps the edge key, so a partially annotated config still works.
+_HOME_POINTS = sorted(
+    (str(_aid), float(_xy[0]), float(_xy[1])) for _aid, _xy in SPAWN_HOME_XY.items()
+)
+_HOME_KEY_BY_AGENT = {
+    str(_aid): (str(_aid) if _aid in SPAWN_HOME_XY else str(_edge))
+    for _aid, _edge in SPAWN_EDGE_BY_AGENT.items()
+}
+# Spawn edges that still serve as a home key, meaning every edge under the edge basis and
+# only the edges of un-annotated households under the centroid basis.  Sampling is driven
+# off this set, so a partially annotated config measures each household exactly once.
+_EDGE_HOME_KEYS = set(_HOME_KEY_BY_AGENT.values()).intersection(_DISTINCT_SPAWN_EDGES)
 metrics = RunMetricsCollector(
     METRICS_ENABLED,
     METRICS_LOG_PATH,
@@ -1698,6 +1748,9 @@ metrics = RunMetricsCollector(
     ordered_areas=ALERT_SCHEDULE.ordered_areas(),
     corridor_edges=_CORRIDOR_EDGES,
     spawn_edge_by_agent=SPAWN_EDGE_BY_AGENT,
+    time_margin_warn_s=TIME_MARGIN_WARN_S,
+    home_key_by_agent=_HOME_KEY_BY_AGENT,
+    geometry_basis=HOME_GEOMETRY_BASIS,
 )
 metrics.total_agents = len(SPAWN_EVENTS)
 params_log_path = write_run_parameter_log(
@@ -1725,9 +1778,6 @@ timeline.emit_scripted(
 if timeline.path:
     print(f"[TIMELINE] path={timeline.path}")
 
-# Distinct spawn edges and a seen-set drive the non-evacuee fire-reach companion count.
-_DISTINCT_SPAWN_EDGES = sorted(set(SPAWN_EDGE_BY_AGENT.values()))
-_FIRE_REACHED_SEEN = set()
 dashboard = WebDashboard(
     enabled=WEB_DASHBOARD_ENABLED,
     host=WEB_DASHBOARD_HOST,
@@ -2289,6 +2339,61 @@ def _update_agent_live_status(
     agent_live_status[agent_id] = status
 
 
+# --- Per-step vehicle state via TraCI subscriptions ---
+# Position, angle, current edge, and route are each read twice per vehicle per step, once
+# for the step log and once for live status.  Read individually that is seven round trips
+# per vehicle per step, which dominated every run.  Subscribing each vehicle at insertion
+# lets SUMO push all four with the step, so one call per step replaces all of them.  The
+# values are the same ones the getters return, so trajectories and metrics are unchanged.
+_VEHICLE_SUBSCRIPTION_VARS = (tc.VAR_POSITION, tc.VAR_ANGLE, tc.VAR_ROAD_ID, tc.VAR_EDGES)
+_vehicle_sub_results: Dict[str, Dict[int, Any]] = {}
+
+
+def subscribe_vehicle_state(veh_id: str) -> None:
+    """Subscribe one vehicle to the state the per-step loops read.
+
+    Called once when the vehicle is inserted.  A failure is not fatal, since
+    :func:`vehicle_step_state` falls back to direct getters for any vehicle missing
+    from the subscription results.
+    """
+    try:
+        traci.vehicle.subscribe(veh_id, _VEHICLE_SUBSCRIPTION_VARS)
+    except traci.TraCIException:
+        pass
+
+
+def refresh_vehicle_subscriptions() -> None:
+    """Pull every subscribed vehicle's state in one call, once per simulation step."""
+    global _vehicle_sub_results
+    try:
+        _vehicle_sub_results = traci.vehicle.getAllSubscriptionResults() or {}
+    except traci.TraCIException:
+        _vehicle_sub_results = {}
+
+
+def vehicle_step_state(veh_id: str) -> Tuple[Any, Any, Any, Any]:
+    """Return ``(position, angle, route, road_id)`` for one vehicle.
+
+    Served from the per-step subscription snapshot.  A vehicle that has no subscription,
+    which happens for anything inserted outside the normal departure path, falls back to
+    the direct getters so behaviour is identical either way.
+    """
+    row = _vehicle_sub_results.get(veh_id)
+    if row is not None:
+        return (
+            row.get(tc.VAR_POSITION),
+            row.get(tc.VAR_ANGLE),
+            row.get(tc.VAR_EDGES),
+            row.get(tc.VAR_ROAD_ID),
+        )
+    return (
+        traci.vehicle.getPosition(veh_id),
+        traci.vehicle.getAngle(veh_id),
+        traci.vehicle.getRoute(veh_id),
+        traci.vehicle.getRoadID(veh_id),
+    )
+
+
 def _refresh_active_agent_live_status(sim_t_s: float, active_vehicle_ids: List[str]) -> None:
     active_set = set(active_vehicle_ids)
     for agent_id in list(agent_live_status.keys()):
@@ -2296,9 +2401,10 @@ def _refresh_active_agent_live_status(sim_t_s: float, active_vehicle_ids: List[s
             agent_live_status[agent_id]["active"] = False
     for agent_id in active_vehicle_ids:
         try:
-            roadid = traci.vehicle.getRoadID(agent_id)
-            pos = traci.vehicle.getPosition(agent_id)
-            route_head = list(traci.vehicle.getRoute(agent_id))[:AGENT_HISTORY_ROUTE_HEAD_EDGES]
+            pos, _angle, route, roadid = vehicle_step_state(agent_id)
+            if pos is None or route is None:
+                continue
+            route_head = list(route)[:AGENT_HISTORY_ROUTE_HEAD_EDGES]
             _update_agent_live_status(
                 agent_id,
                 sim_t_s=sim_t_s,
@@ -2472,6 +2578,39 @@ def compute_edge_risk_for_fires(
     if blocked:
         return (True, 1.0, best_margin)
     return (False, math.exp(-best_margin / max(1e-6, RISK_DECAY_M)), best_margin)
+
+
+def compute_point_margin_for_fires(
+    x: float,
+    y: float,
+    fires: List[Tuple[float, float, float]],
+) -> float:
+    """Compute the fire margin at a single point, used for building-centroid homes.
+
+    Same definition as :func:`compute_edge_risk_for_fires`, with the edge polyline
+    replaced by one point:
+
+        margin_m = min_over_all_fires(dist(fire_centre, point) - fire_radius)
+
+    A negative margin means the fire has overtaken the point.
+
+    Args:
+        x: Point X in SUMO coordinates.
+        y: Point Y in SUMO coordinates.
+        fires: List of ``(x, y, r)`` tuples representing active fire circles.
+
+    Returns:
+        Minimum clearance in metres, or ``inf`` when no fire is active.
+    """
+    if not fires:
+        return float("inf")
+    best_margin = float("inf")
+    for (fx, fy, fr) in fires:
+        dist = math.hypot(float(x) - float(fx), float(y) - float(fy))
+        margin = dist - float(fr)
+        if margin < best_margin:
+            best_margin = margin
+    return best_margin
 
 
 # --- M2 staggered awareness ---
@@ -3617,6 +3756,7 @@ def process_pending_departures(step_idx: int):
                 departSpeed=dSpeed,
             )
             traci.vehicle.setColor(vid, dColor)
+            subscribe_vehicle_state(vid)
             spawned.add(vid)
             DEPARTURE_TIMES[vid] = float(sim_t)
             agent_state.has_departed = True
@@ -3767,14 +3907,14 @@ def process_vehicles(step_idx: int):
 
     vehicles_list = traci.vehicle.getIDList()
 
-    # Your original prints (kept)
+    # Per-step vehicle state, served from the step's subscription snapshot.
     for vehicle in vehicles_list:
-        position = traci.vehicle.getPosition(vehicle)
-        angle = traci.vehicle.getAngle(vehicle)
-        rinfo = traci.vehicle.getRoute(vehicle)
-        roadid = traci.vehicle.getRoadID(vehicle)
-        print(f"t={sim_t_s:.2f}s | Vehicle ID: {vehicle}, Position: {position}, Angle: {angle}")
-        print(f"Vehicle info of {vehicle}, RouteLen: {len(rinfo)}, Roadid: {roadid}")
+        position, angle, rinfo, roadid = vehicle_step_state(vehicle)
+        if rinfo is None:
+            continue
+        if VEHICLE_STEP_LOG:
+            print(f"t={sim_t_s:.2f}s | Vehicle ID: {vehicle}, Position: {position}, Angle: {angle}")
+            print(f"Vehicle info of {vehicle}, RouteLen: {len(rinfo)}, Roadid: {roadid}")
 
         # --- Edge-trace recording (every step, both modes) ---
         if roadid and not roadid.startswith(":"):
@@ -5416,13 +5556,11 @@ def update_fire_shapes(sim_t_s: float):
         poly_id = f"fire_{f['id']}"
         active_ids.add(poly_id)
 
-        shape = _circle_polygon(f["x"], f["y"], f["r"], FIRE_POLY_POINTS)
-
         if poly_id not in _fire_poly_ids:
             # add(polygonID, shape, color, fill=False, polygonType='', layer=0, lineWidth=1) :contentReference[oaicite:7]{index=7}
             traci.polygon.add(
                 poly_id,
-                shape=shape,
+                shape=_circle_polygon(f["x"], f["y"], f["r"], FIRE_POLY_POINTS),
                 color=FIRE_RGBA,
                 fill=True,
                 polygonType=FIRE_POLY_TYPE,
@@ -5430,11 +5568,16 @@ def update_fire_shapes(sim_t_s: float):
                 lineWidth=FIRE_LINEWIDTH
             )
             _fire_poly_ids.add(poly_id)
+            _fire_drawn_radius[poly_id] = f["r"]
         else:
-            # Update polygon as fire grows/spreads (shape is list of 2D positions) :contentReference[oaicite:8]{index=8}
-            traci.polygon.setShape(poly_id, shape)
-            traci.polygon.setColor(poly_id, FIRE_RGBA)
-            traci.polygon.setFilled(poly_id, True)
+            # Update the polygon as the fire grows.  Colour and fill are set at creation
+            # and never change, so only the shape is worth re-sending, and only once the
+            # radius has actually moved.
+            if abs(f["r"] - _fire_drawn_radius.get(poly_id, -1e9)) >= FIRE_REDRAW_DELTA_M:
+                traci.polygon.setShape(
+                    poly_id, _circle_polygon(f["x"], f["y"], f["r"], FIRE_POLY_POINTS)
+                )
+                _fire_drawn_radius[poly_id] = f["r"]
 
     # Optional cleanup: remove polygons that are no longer active
     # (only relevant if you later add an extinguish/end time)
@@ -5453,6 +5596,9 @@ try:
     while traci.simulation.getTime() < SIM_END_TIME_S:
         traci.simulationStep()
         step_idx += 1
+        # One round trip for every subscribed vehicle's position, angle, edge, and route,
+        # which the two per-step loops below then read without touching TraCI again.
+        refresh_vehicle_subscriptions()
         # --- NEW: visualize fire spread each step (or each decision round if you prefer) ---
         update_fire_shapes(traci.simulation.getTime())
         process_vehicles(step_idx)
@@ -5490,18 +5636,29 @@ try:
             # diluting the average with many low-risk samples between rounds.
             fires = active_fires(sim_t)
             fire_geom = [(float(item["x"]), float(item["y"]), float(item["r"])) for item in fires]
-            # Non-evacuee fire reach: mark each spawn edge the fire has crossed once, so the
-            # companion count can flag households the fire reaches that never departed.
+            # Home-edge fire sampling. Every home edge is sampled every round, so the
+            # time-margin metric gets the fire-arrival instant for the edges the fire
+            # reaches and the closest approach for the edges it never reaches. The
+            # crossing itself is still recorded once, which is what the non-evacuee
+            # companion count reads.
             for _sedge in _DISTINCT_SPAWN_EDGES:
-                if _sedge in _FIRE_REACHED_SEEN:
-                    continue
                 try:
                     _, _, _sm = compute_edge_risk_for_fires(_sedge, fire_geom)
                 except Exception:
                     continue
-                if _sm is not None and _sm <= 0.0:
+                if _sedge in _EDGE_HOME_KEYS:
+                    metrics.record_home_edge_margin(_sedge, sim_t, _sm)
+                if _sm is not None and _sm <= 0.0 and _sedge not in _FIRE_REACHED_SEEN:
                     _FIRE_REACHED_SEEN.add(_sedge)
                     metrics.record_fire_reached_edge(_sedge, sim_t)
+            # Under the building-centroid basis the home margin is measured at each
+            # household's own point, so two houses on one street no longer share a single
+            # fire-arrival instant.  Pure arithmetic with no TraCI, so it stays cheap as
+            # the population grows.
+            for _aid, _hx, _hy in _HOME_POINTS:
+                metrics.record_home_edge_margin(
+                    _aid, sim_t, compute_point_margin_for_fires(_hx, _hy, fire_geom)
+                )
             for vid in active_vehicle_ids:
                 try:
                     roadid = traci.vehicle.getRoadID(vid)
